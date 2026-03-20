@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mojomast/ussycode/internal/telemetry"
 )
 
 // SMTPConfig holds configuration for the inbound SMTP server.
@@ -358,6 +360,7 @@ func (sess *smtpSession) handleDATA() {
 	// Deliver to Maildir
 	err := sess.server.deliverToMaildir(sess.vmName, sess.mailFrom, sess.rcptTo, body.String())
 	if err != nil {
+		telemetry.RecordSMTPDelivery(context.Background(), "failed")
 		sess.server.logger.Error("SMTP delivery failed",
 			"vm", sess.vmName,
 			"from", sess.mailFrom,
@@ -366,6 +369,8 @@ func (sess *smtpSession) handleDATA() {
 		sess.writeLine("452 %s", err.Error())
 		return
 	}
+
+	telemetry.RecordSMTPDelivery(context.Background(), "delivered")
 
 	sess.server.logger.Info("SMTP message delivered",
 		"vm", sess.vmName,

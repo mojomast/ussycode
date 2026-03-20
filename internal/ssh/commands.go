@@ -797,6 +797,20 @@ func generateLinkToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+func normalizeShareLinkToken(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	if idx := strings.Index(input, "ussy_share="); idx >= 0 {
+		return strings.TrimSpace(input[idx+len("ussy_share="):])
+	}
+	if idx := strings.LastIndex(input, "/"); idx >= 0 && idx < len(input)-1 && strings.Contains(input, "://") {
+		return strings.TrimSpace(input[idx+1:])
+	}
+	return input
+}
+
 // ── ssh-key ──────────────────────────────────────────────────────────
 
 func cmdSSHKey(s *Shell, args []string) error {
@@ -979,11 +993,13 @@ func cmdShare(s *Shell, args []string) error {
 		return cmdShareRemove(s, args[1:])
 	case "add-link":
 		return cmdShareAddLink(s, args[1:])
+	case "remove-link":
+		return cmdShareRemoveLink(s, args[1:])
 	case "set-public":
 		return cmdShareSetPublic(s, args[1:], true)
 	case "set-private":
 		return cmdShareSetPublic(s, args[1:], false)
-	case "list", "ls":
+	case "show", "list", "ls":
 		return cmdShareList(s, args[1:])
 	case "cname":
 		return cmdShareCname(s, args[1:])
@@ -1005,9 +1021,10 @@ func cmdShareHelp(s *Shell) error {
 	s.writeln("    share add <vm> <handle>      share with a user by handle")
 	s.writeln("    share remove <vm> <handle>   revoke a user's access")
 	s.writeln("    share add-link <vm>          create a shareable link")
+	s.writeln("    share remove-link <vm> <token-or-url>  revoke a share link")
 	s.writeln("    share set-public <vm>        make HTTPS endpoint public")
 	s.writeln("    share set-private <vm>       make HTTPS endpoint private")
-	s.writeln("    share list <vm>              list shares for a VM")
+	s.writeln("    share show <vm>              show share state for a VM")
 	s.writeln("")
 	s.writeln("  \033[1mcustom domains\033[0m")
 	s.writeln("    share cname <vm> <domain>         add a custom domain")
@@ -1114,10 +1131,38 @@ func cmdShareAddLink(s *Shell, args []string) error {
 	}
 
 	s.writeln("")
-	s.writef("  https://%s/share/%s\n", s.gw.domain, token)
+	s.writef("  https://%s.%s/?ussy_share=%s\n", vmName, s.gw.domain, token)
 	s.writeln("")
-	s.writeln("  anyone with this link can access the HTTPS endpoint.")
+	s.writeln("  opening the link redeems a share cookie for this VM.")
 	s.writeln("")
+	return nil
+}
+
+func cmdShareRemoveLink(s *Shell, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: share remove-link <vm> <token-or-url>")
+	}
+
+	ctx := context.Background()
+	vmName := args[0]
+	token := normalizeShareLinkToken(args[1])
+	if token == "" {
+		return fmt.Errorf("invalid share link token")
+	}
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, vmName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", vmName)
+		}
+		return fmt.Errorf("lookup vm: %w", err)
+	}
+
+	if err := s.gw.DB.RemoveShareLink(ctx, vmRecord.ID, token); err != nil {
+		return fmt.Errorf("remove share link: %w", err)
+	}
+
+	s.writef("  removed share link for %s\n", vmName)
 	return nil
 }
 
@@ -1205,7 +1250,7 @@ func cmdShareList(s *Shell, args []string) error {
 				}
 			} else if sh.LinkToken.Valid {
 				sj.Type = "link"
-				sj.Link = fmt.Sprintf("https://%s/share/%s", s.gw.domain, sh.LinkToken.String)
+				sj.Link = fmt.Sprintf("https://%s.%s/?ussy_share=%s", vmName, s.gw.domain, sh.LinkToken.String)
 			} else if sh.IsPublic {
 				sj.Type = "public"
 			}
@@ -1231,8 +1276,8 @@ func cmdShareList(s *Shell, args []string) error {
 					s.writef("  [user]  %s  (since %s)\n", u.Handle, relativeTime(sh.CreatedAt.Time))
 				}
 			} else if sh.LinkToken.Valid {
-				s.writef("  [link]  https://%s/share/%s  (since %s)\n",
-					s.gw.domain, sh.LinkToken.String, relativeTime(sh.CreatedAt.Time))
+				s.writef("  [link]  https://%s.%s/?ussy_share=%s  (since %s)\n",
+					vmName, s.gw.domain, sh.LinkToken.String, relativeTime(sh.CreatedAt.Time))
 			}
 		}
 	}

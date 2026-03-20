@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"time"
+
+	"github.com/mojomast/ussycode/internal/telemetry"
 )
 
 func init() {
@@ -18,7 +20,8 @@ func init() {
 //	browser          -- generate a magic link URL
 //	browser --qr     -- generate a magic link with QR code (future enhancement)
 func cmdBrowser(s *Shell, args []string) error {
-	ctx := context.Background()
+	ctx, span := telemetry.Start(context.Background(), "ssh.browser.magic_link")
+	defer span.End()
 	showQR := hasArgFlag(args, "--qr")
 
 	// Generate a cryptographically random 32-byte token
@@ -32,10 +35,12 @@ func cmdBrowser(s *Shell, args []string) error {
 
 	// Store in DB
 	if err := s.gw.DB.CreateMagicToken(ctx, s.user.ID, token, expiresAt); err != nil {
+		telemetry.RecordBrowserToken(ctx, "create_failed")
 		return fmt.Errorf("store token: %w", err)
 	}
+	telemetry.RecordBrowserToken(ctx, "created")
 
-	url := fmt.Sprintf("https://%s/__auth/magic/%s", s.gw.domain, token)
+	url := fmt.Sprintf("https://%s/admin/login/callback?token=%s", s.gw.domain, token)
 
 	s.writeln("")
 	s.writeln("  \033[1mBrowser Access\033[0m")

@@ -360,6 +360,16 @@ func (d *DB) RemoveShareByVMAndUser(ctx context.Context, vmID, targetUserID int6
 	})
 }
 
+// RemoveShareLink removes a link-based share for a VM by its link token.
+func (d *DB) RemoveShareLink(ctx context.Context, vmID int64, token string) error {
+	return d.WriteTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`DELETE FROM shares WHERE vm_id = ? AND link_token = ?`,
+			vmID, token)
+		return err
+	})
+}
+
 // SharesByVM returns all share records for a VM.
 func (d *DB) SharesByVM(ctx context.Context, vmID int64) ([]*Share, error) {
 	var shares []*Share
@@ -765,6 +775,32 @@ func (d *DB) SetUserTrustLevel(ctx context.Context, userID int64, level string) 
 			time.Now().UTC().Format(time.RFC3339), userID)
 		return err
 	})
+}
+
+// CreateAuditLog inserts a new audit log entry.
+func (d *DB) CreateAuditLog(ctx context.Context, actorID *int64, action, targetType string, targetID, detail *string) (*AuditLog, error) {
+	var log AuditLog
+	err := d.WriteTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO audit_logs (actor_id, action, target_type, target_id, detail)
+			 VALUES (?, ?, ?, ?, ?)`,
+			actorID, action, targetType, targetID, detail)
+		if err != nil {
+			return fmt.Errorf("insert audit log: %w", err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx,
+			`SELECT id, actor_id, action, target_type, target_id, detail, created_at
+			 FROM audit_logs WHERE id = ?`, id,
+		).Scan(&log.ID, &log.ActorID, &log.Action, &log.TargetType, &log.TargetID, &log.Detail, &log.CreatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &log, nil
 }
 
 // GetUserVMCount returns the total number of VMs a user has.

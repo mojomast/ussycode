@@ -10,6 +10,8 @@ ssh ussyco.de
 
 That's it. On first connect, ussycode registers your SSH key and gives you a handle (username). You'll land in an interactive shell where you can manage your environments.
 
+ussycode is part of the **Ussyverse** — a community of AI-powered dev environments. Run `community` to see links, stats, and connect with others.
+
 ## Creating Your First VM
 
 Once connected to the ussycode shell:
@@ -30,6 +32,8 @@ This creates a new dev environment with the default Ubuntu-based image (`ussyunt
 |------|-------------|---------|
 | `--name=<name>` | Name your environment | auto-generated |
 | `--image=<image>` | Base image to use | `ussyuntu` |
+
+> **New here?** Run `tutorial` for a hands-on 10-lesson walkthrough covering VM lifecycle, web servers, sharing, and more.
 
 ## Listing Your Environments
 

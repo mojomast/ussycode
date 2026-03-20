@@ -2,13 +2,28 @@
 
 Self-hosted dev environment platform for the Ussyverse. Instant SSH-accessible microVMs with persistent disks, automatic HTTPS, and AI agent support.
 
-**`ssh ussyco.de`** -- get a dev environment in seconds. No signup. No credit card. SSH keys are identity.
+**`ssh ussyco.de`** — get a dev environment in seconds. No signup. No credit card. SSH keys are identity.
 
 ## What is this?
 
 ussycode gives anyone instant dev environments via SSH. Under the hood it provisions Firecracker microVMs with ZFS-backed persistent storage, automatic HTTPS via Caddy wildcard TLS, and a built-in metadata service with LLM proxy access.
 
 Anyone can contribute compute to the **Ussyverse Server Pool** by deploying a single agent binary on their own hardware. The pool grows organically as community members donate iron.
+
+## Product Vision
+
+ussycode targets **feature parity with [exe.dev](https://exe.dev)** — a self-hosted, Ussyverse-native version of the full product loop:
+
+1. SSH in → create a VM
+2. Run your app inside the VM
+3. Get an automatic HTTPS URL (`username.ussyco.de`)
+4. Share it (public link, email invite, or access-controlled)
+5. Control access (public / private / invite-only)
+6. Script it via API (`POST /exec`, tokens, BYOK LLM access)
+
+Where exe.dev is a closed hosted product, ussycode is **open-source and self-hostable** while staying first-class within the Ussyverse (trust tiers, community arena, email gateway, agent support).
+
+See [`PLAN-exe-dev-parity-roadmap.md`](PLAN-exe-dev-parity-roadmap.md) for the full gap analysis and phased delivery plan.
 
 ## Architecture
 
@@ -20,7 +35,7 @@ ssh ussyco.de  -->  SSH Gateway  -->  Control Plane  -->  Firecracker microVM
                                     Caddy Reverse Proxy  -->  username.ussyco.de
 ```
 
-**Single-node:** SSH gateway, VM manager, Caddy proxy, SQLite -- all in one Go binary.
+**Single-node:** SSH gateway, VM manager, Caddy proxy, SQLite — all in one Go binary.
 
 **Multi-node:** Control plane coordinates agent nodes over gRPC/mTLS + WireGuard mesh. Agents run VMs on bare metal, VPS, or homelab hardware.
 
@@ -39,29 +54,55 @@ ssh ussyco.de  -->  SSH Gateway  -->  Control Plane  -->  Firecracker microVM
 
 ## Project Status
 
-**Phase 1-2 (partially complete):** SSH gateway, database, auth, VM manager skeleton, proxy integration, base image.
+| Area | Status |
+|---|---|
+| Core platform (SSH gateway, VM lifecycle, proxy, auth, metadata, API) | ✅ Implemented |
+| LLM gateway (5 providers, BYOK, rate limiting) | ✅ Implemented |
+| Email (inbound SMTP + outbound) | ✅ Implemented |
+| Trust/quota system (4 tiers) | ✅ Implemented |
+| Admin panel | ✅ Implemented |
+| Custom domains | ✅ Implemented |
+| Tutorial (10 lessons) | ✅ Implemented |
+| Arena / community features | ✅ Implemented |
+| API wiring (`POST /exec`) | ⚠️ Needs fix (nil executor) |
+| Browser auth flow | ⚠️ Needs fix (URL mismatch) |
+| Multi-node cluster | 🔧 Scaffolded, not integrated |
+| Telemetry / observability | ❌ Not yet implemented |
 
-**Phase 3+ (not started):** Firecracker integration testing, ZFS storage, agent node pool, multi-node scheduling, production hardening.
+## Development Roadmap
 
-See [spec.md](spec.md) for the full product specification with 7 parallel development tracks.
+Full plan: [`PLAN-exe-dev-parity-roadmap.md`](PLAN-exe-dev-parity-roadmap.md)
+
+| Phase | Goal |
+|---|---|
+| **0 — Stabilize** | Fix API wiring, browser auth, failing tests, stale docs |
+| **1 — Core UX loop** | Verified boot → run → HTTPS URL end-to-end |
+| **2 — Sharing & auth** | Public/private/invite-only URL sharing, access control |
+| **3 — API** | `/exec` + token auth fully wired, scriptable from agents |
+| **4 — Email** | Inbound routing + outbound delivery integrated into product flows |
+| **5 — Agents** | AGENTS.md support, prompt-on-create, Shelley-compatible tooling |
+| **6 — Teams** | Multi-user orgs, SSO, per-org resource quotas |
+| **7 — Cluster** | Multi-node agent pool fully integrated and schedulable |
 
 ## Repository Structure
 
 ```
-cmd/exedevussy/        Entry point (will be renamed to cmd/ussycode/)
+cmd/ussycode/          Main server entry point
+cmd/ussyverse-agent/   Multi-node agent binary
 internal/
-  auth/                SSH key-based stateless token auth
-  config/              Configuration (needs wiring)
-  db/                  SQLite with WAL, goose migrations, 30+ queries
-  gateway/             Metadata service (169.254.169.254)
-  proxy/               Caddy admin API integration
-  ssh/                 SSH gateway, REPL shell, 16 commands
-  vm/                  Firecracker VM manager, OCI image pull, networking
-images/ussyuntu/       Base VM image (Dockerfile)
-deploy/                Ansible & Terraform (scaffolded)
-templates/             VM templates (blank, battlebussy-agent, geoffrussy)
-spec.md                Full product specification v2.0
-PROMPT.md              One-shot orchestrator prompt for autonomous development
+  admin/               Operator/admin web panel
+  api/                 HTTPS /exec API
+  auth/                SSH-signed token primitives
+  config/              Configuration loading and validation
+  db/                  SQLite models, queries, embedded migrations
+  gateway/             Metadata + LLM/email gateway services
+  proxy/               Caddy auth/proxy integration
+  ssh/                 SSH gateway, REPL shell, shared command executor
+  vm/                  Firecracker VM manager, images, networking
+images/ussyuntu/       Base VM image (Dockerfile + init script)
+deploy/                Deployment assets
+spec.md                Full product specification
+PLAN-exe-dev-parity-roadmap.md  exe.dev parity gap analysis and roadmap
 ```
 
 ## Development
@@ -71,7 +112,7 @@ PROMPT.md              One-shot orchestrator prompt for autonomous development
 - Go 1.25+
 - Linux with KVM support (`/dev/kvm`)
 - Firecracker binary
-- ZFS kernel module (for storage track)
+- ZFS kernel module (for storage)
 - Root access (for VM networking and Firecracker jailer)
 
 ### Build
@@ -89,7 +130,7 @@ go test ./...
 ### Run
 
 ```bash
-sudo ./ussycode --addr :2222 --http-addr :8080 --domain ussyco.de
+sudo ./ussycode --addr :2222 --http-addr :8080 --admin-addr :9090 --domain ussyco.de
 ```
 
 ## Web Apps Inside VMs
@@ -122,27 +163,11 @@ That skill teaches OpenCode to:
 - prefer port `8080`
 - report the public proxied URL instead of `localhost`
 
-## Parallel Development Tracks
-
-The spec defines 7 independent tracks designed for parallel execution by a swarm of agents:
-
-| Track | Focus | Status |
-|---|---|---|
-| **A** | Core Cleanup | Module rename, config wiring, error handling |
-| **B** | VM Lifecycle | Firecracker boot, ZFS storage, image pipeline |
-| **C** | Networking | TAP/nftables, metadata service, Caddy integration |
-| **D** | SSH & UX | Gateway hardening, session proxy, REPL polish |
-| **E** | Agent Node Pool | gRPC service, WireGuard mesh, scheduler |
-| **F** | Security | Jailer, seccomp, audit logging, rate limiting |
-| **G** | CI/CD & Ops | GitHub Actions, Ansible playbooks, monitoring |
-
-See [PROMPT.md](PROMPT.md) for the orchestrator prompt that can spin up subagents for each track.
-
 ## Credits
 
 Created by [Kyle Durepos](https://github.com/mojomast) ([@mojomast](https://github.com/mojomast)) and [shuv](https://github.com/shuv1337) ([@shuv1337](https://github.com/shuv1337)).
 
-Part of [The Ussyverse](https://ussy.host) -- an ever-expanding open-source ecosystem.
+Part of [The Ussyverse](https://ussy.host) — an ever-expanding open-source ecosystem.
 
 ## License
 

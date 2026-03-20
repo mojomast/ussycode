@@ -394,26 +394,26 @@ func TestSMTPServer_UnknownCommand(t *testing.T) {
 
 func TestSMTPServer_DotStuffing(t *testing.T) {
 	tmpDir := t.TempDir()
-	_, addr := testSMTPServer(t, tmpDir)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := NewSMTPServer(&SMTPConfig{
+		Domain:           "test.ussy.host",
+		RootfsDir:        tmpDir,
+		MaxUnread:        100,
+		RatePerHourPerVM: 10,
+		Hostname:         "smtp.test.ussy.host",
+	}, logger)
 
-	client := dialSMTP(t, addr)
-	client.readLine() // greeting
-
-	client.sendAndRead("EHLO test")
-	client.sendAndRead("MAIL FROM:<sender@example.com>")
-	client.sendAndRead("RCPT TO:<user@dotvm.test.ussy.host>")
-	client.sendAndRead("DATA")
-	client.send("Subject: Dot stuffing test")
-	client.send("")
-	client.send("This line starts with a dot:")
-	client.send("..and this had dot-stuffing")
-	client.send("Regular line")
-	resp := client.sendAndRead(".")
-	if !strings.HasPrefix(resp, "250") {
-		t.Fatalf("expected 250, got: %q", resp)
+	sess := &smtpSession{
+		server:   srv,
+		reader:   bufio.NewReader(strings.NewReader("Subject: Dot stuffing test\r\n\r\nThis line starts with a dot:\r\n..and this had dot-stuffing\r\nRegular line\r\n.\r\n")),
+		writer:   bufio.NewWriter(io.Discard),
+		mailFrom: "sender@example.com",
+		rcptTo:   []string{"user@dotvm.test.ussy.host"},
+		vmName:   "dotvm",
 	}
 
-	// Verify the delivered message has the dot removed
+	sess.handleDATA()
+
 	maildirNew := filepath.Join(tmpDir, "dotvm", "home", "ussycode", "Maildir", "new")
 	entries, err := os.ReadDir(maildirNew)
 	if err != nil {
@@ -428,7 +428,6 @@ func TestSMTPServer_DotStuffing(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	// The ".." should have been de-stuffed to "."
 	if !strings.Contains(content, ".and this had dot-stuffing") {
 		t.Errorf("dot-stuffing not handled correctly: %s", content)
 	}

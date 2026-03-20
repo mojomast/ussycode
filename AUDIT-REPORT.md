@@ -7,6 +7,19 @@
 
 ---
 
+## CORRECTIONS
+
+> **Post-review verification against live source code identified 4 factual errors in the original report. Each has been corrected in place below. This section documents what changed and why.**
+
+| # | Original Claim | Correction |
+|---|----------------|------------|
+| 1 | `cmdLLMKey` is never registered — unreachable dead code | **FALSE.** `internal/ssh/commands.go:42` has `"llm-key": cmdLLMKey` in the static commands map. The command is registered and reachable. All related "dead code" findings for this item are removed. |
+| 2 | `admin.go:680` uses a local method that only updates `trust_level`, skipping quotas | **FALSE.** `admin.go:441` calls `h.db.SetUserTrustLevel(ctx, id, newLevel)` — the correct centralized DB method that updates `trust_level` AND all 4 quota columns. Line 680 does not contain this logic. The reported inconsistency does not exist. |
+| 3 | `go.mod` specifies `go 1.25.7` (non-existent version) | **FALSE.** Actual `go.mod` contains `go 1.24.0` with `toolchain go1.24.4` — both valid, real versions. |
+| 4 | All 12 test suites pass including `internal/gateway` | **INCOMPLETE.** `go test ./internal/gateway/...` **FAILS**. `TestSMTPServer_DotStuffing` fails with a Maildir path resolution error. This is a known failing test not reflected in the original report. |
+
+---
+
 ## 1. Build Check
 
 **Command:** `go build ./...`  
@@ -19,7 +32,7 @@ All 18 packages compile cleanly. No unresolved symbols, type errors, or missing 
 ## 2. Test Check
 
 **Command:** `go test ./... -count=1`  
-**Result:** ✅ **ALL 12 TEST SUITES PASS**
+**Result:** ⚠️ **11 PASS, 1 FAIL** — `internal/gateway` has a known failing test (see CORRECTIONS section)
 
 | Package | Status | Notes |
 |---------|--------|-------|
@@ -28,7 +41,7 @@ All 18 packages compile cleanly. No unresolved symbols, type errors, or missing 
 | `internal/auth` | ✅ PASS | 0.010s |
 | `internal/config` | ✅ PASS | 0.005s |
 | `internal/db` | ✅ PASS | 0.210s (17 tests: migration, quota, custom domain) |
-| `internal/gateway` | ✅ PASS | 0.581s |
+| `internal/gateway` | 🔴 **FAIL** | `TestSMTPServer_DotStuffing` — `open .../dotvm/home/ussycode/Maildir/new: no such file or directory` |
 | `internal/pki` | ✅ PASS | 0.015s |
 | `internal/scheduler` | ✅ PASS | 0.010s |
 | `internal/ssh` | ✅ PASS | 1.457s |
@@ -41,6 +54,8 @@ All 18 packages compile cleanly. No unresolved symbols, type errors, or missing 
 | `internal/mesh` | ⚠️ No test files |
 | `internal/proto/nodev1` | ⚠️ No test files |
 | `internal/proxy` | ⚠️ No test files |
+
+**Known failing test:** `internal/gateway.TestSMTPServer_DotStuffing` (`email_test.go:420`) — the test attempts to open a Maildir path constructed from a temp directory and VM fixture (`/tmp/TestSMTPServer_DotStuffing.../dotvm/home/ussycode/Maildir/new`) that does not get created during test setup. This is a test infrastructure bug, not a production code defect, but it means the dot-stuffing delivery path is not verified by CI.
 
 **7 packages have no test files.** While some of these are small (proto definitions, main entrypoints), `internal/agent`, `internal/controlplane`, `internal/mesh`, and `internal/proxy` contain significant logic that is untested.
 
@@ -89,11 +104,11 @@ The module rename from Track A.1 was completed correctly across all files.
 
 ### 6a. `commands.go` (1,734 lines)
 
-- **Static commands map** (line 26): 15 commands registered statically (`help`, `whoami`, `ls`, `new`, `rm`, `ssh`, `stop`, `restart`, `tag`, `rename`, `cp`, `start`, `ssh-key`, `share`, `admin`)
+- **Static commands map** (line 26): 16 commands registered statically (`help`, `whoami`, `ls`, `new`, `rm`, `ssh`, `stop`, `restart`, `tag`, `rename`, `cp`, `start`, `ssh-key`, `share`, `admin`, `llm-key`)
 - **Dynamic registrations via `init()`**: 4 commands registered at runtime (`community`, `arena`, `browser`, `tutorial`)
-- **Total registered:** 19 commands
+- **Total registered:** 20 commands
 
-🔴 **ISSUE: `cmdLLMKey` is defined (lines 1561–1692, ~131 lines) but NEVER registered.** Neither in the static map nor via `RegisterCommand()` in any `init()`. This means the `llm-key` command is completely unreachable. 6 functions are dead: `cmdLLMKey`, `cmdLLMKeyHelp`, `cmdLLMKeySet`, `cmdLLMKeyList`, `cmdLLMKeyRemove`, plus helper logic. The `share` help text references LLM functionality but `llm-key` is not callable.
+✅ ~~**`cmdLLMKey` dead code**~~ — **CORRECTED (see CORRECTIONS section).** `cmdLLMKey` IS registered at line 42 of the static commands map (`"llm-key": cmdLLMKey`). The command and its 5 helper functions (lines 1561–1692) are fully reachable. This was not dead code.
 
 ### 6b. `queries.go` (1,372 lines)
 
@@ -154,7 +169,7 @@ Has a concrete `Gateway` implementation. Well-documented.
 
 | Item | Location | Lines | Severity |
 |------|----------|-------|----------|
-| `cmdLLMKey` + 5 helpers | `commands.go:1561–1692` | ~131 | HIGH — unreachable command, never registered |
+| ~~`cmdLLMKey` + 5 helpers~~ | ~~`commands.go:1561–1692`~~ | ~~~131~~ | ~~HIGH — unreachable command, never registered~~ **CORRECTED** — command IS registered at line 42; not dead code |
 | `rowScanner` interface | `queries.go:1056–1058` | 3 | LOW — defined but never referenced |
 
 ### 🟡 Stubs / Incomplete Implementations (TODOs)
@@ -177,20 +192,21 @@ Has a concrete `Gateway` implementation. Well-documented.
 
 ## 9. Cross-Track Integration Issues
 
-### 🔴 Admin Trust Level / Quota Inconsistency
+### ✅ ~~Admin Trust Level / Quota Inconsistency~~ — **CORRECTED (see CORRECTIONS section)**
 
-**admin.go line 680:** `(h *Handler) setUserTrustLevel()` — updates ONLY `trust_level` column  
-**queries.go line 755:** `(d *DB) SetUserTrustLevel()` — updates `trust_level` AND resets all 4 quota columns (`vm_limit`, `cpu_limit`, `ram_limit_mb`, `disk_limit_mb`)
+~~**admin.go line 680:** `(h *Handler) setUserTrustLevel()` — updates ONLY `trust_level` column~~  
+**admin.go line 441:** `h.db.SetUserTrustLevel(ctx, id, newLevel)` — this IS the centralized DB method, which updates `trust_level` AND resets all 4 quota columns (`vm_limit`, `cpu_limit`, `ram_limit_mb`, `disk_limit_mb`)
 
-The admin **web panel** (Track E.2) uses its own local method instead of the centralized DB method (Track E.3). **Consequence:** When an admin changes a user's trust level via the **web panel**, the user's quota limits are NOT updated to match the new level — the user keeps their old quotas. However, the SSH `admin set-trust` command (`commands.go` line 1728) correctly calls `s.gw.DB.SetUserTrustLevel()` which DOES update quotas. So the same operation produces different results depending on whether it's done via the web UI or the SSH CLI.
+The admin **web panel** correctly calls `h.db.SetUserTrustLevel()` (the same DB method used by the SSH CLI at `commands.go` line 1728). The originally reported line number (680) was incorrect, and no local bypass method exists. **There is no inconsistency between the web panel and SSH CLI paths** — both use the centralized DB method and both update quotas correctly.
 
-### 🟡 `go.mod` Specifies Non-Existent Go Version
+### ✅ ~~`go.mod` Specifies Non-Existent Go Version~~ — **CORRECTED (see CORRECTIONS section)**
 
 ```
-go 1.25.7
+go 1.24.0
+toolchain go1.24.4
 ```
 
-Go versions are currently at 1.22/1.23 (as of early 2026). Version 1.25.7 does not exist. The toolchain gracefully ignores this, but it's incorrect and could cause issues with stricter tooling or CI systems.
+~~Version 1.25.7 does not exist.~~ The actual `go.mod` specifies `go 1.24.0` with `toolchain go1.24.4` — both are valid, real, released versions. No issue exists here.
 
 ### 🟡 `hasArgFlag` vs `hasFlag` Cross-File Dependency
 
@@ -227,29 +243,31 @@ Go versions are currently at 1.22/1.23 (as of early 2026). Version 1.25.7 does n
 
 ## Summary of Findings
 
-### 🔴 High Severity (2)
+### 🔴 High Severity (2) → **1 after corrections**
 
-1. **`cmdLLMKey` dead code** — 131 lines of unreachable code. The `llm-key` command is defined but never registered. Should either be registered or removed.
+1. ~~**`cmdLLMKey` dead code**~~ — **CORRECTED.** `llm-key` IS registered at `commands.go:42`. Not dead code. Finding removed.
 
-2. **Admin web panel trust level doesn't update quotas** — `admin.go` uses a local method that skips quota updates, while `queries.go` has the correct version. The SSH `admin set-trust` command correctly uses the DB method, so the same operation has different behavior depending on the interface (web vs CLI).
+2. ~~**Admin web panel trust level doesn't update quotas**~~ — **CORRECTED.** `admin.go:441` correctly calls `h.db.SetUserTrustLevel()`, which updates all quota columns. No inconsistency exists. Finding removed.
 
-### 🟡 Medium Severity (5)
+3. 🔴 **`TestSMTPServer_DotStuffing` fails** — `internal/gateway` test suite fails with a Maildir path error (`email_test.go:420`). The dot-stuffing delivery path is not verified by CI. Needs test fixture setup fix. *(Added during post-review verification.)*
 
-3. **`go.mod` specifies `go 1.25.7`** — non-existent Go version. Should be a real version (e.g., `1.22` or `1.23`).
+### 🟡 Medium Severity (5) → **4 after corrections**
 
-4. **`NetworkManager` is a struct, not an interface** — limits testability and doesn't match the pattern of the other 3 contracts (`StorageBackend`, `Scheduler`, `LLMGateway`).
+~~3.~~ **4.** ~~**`go.mod` specifies `go 1.25.7`**~~ — **CORRECTED.** Actual `go.mod` contains `go 1.24.0` / `toolchain go1.24.4`, both valid. Finding removed.
 
-5. **7 packages have no tests** — including `internal/agent`, `internal/controlplane`, `internal/mesh`, and `internal/proxy` which contain non-trivial logic.
+**5.** **`NetworkManager` is a struct, not an interface** — limits testability and doesn't match the pattern of the other 3 contracts (`StorageBackend`, `Scheduler`, `LLMGateway`).
 
-6. **Duplicate/redundant scan helpers in `queries.go`** — `rowScanner` interface is unused, `scanVMRow` uses an inline interface, duplicate section comment headers.
+**6.** **7 packages have no tests** — including `internal/agent`, `internal/controlplane`, `internal/mesh`, and `internal/proxy` which contain non-trivial logic.
 
-7. **`hasArgFlag` / `hasFlag` duplication** — two functions with overlapping purpose in different files, creating hidden cross-file coupling.
+**7.** **Duplicate/redundant scan helpers in `queries.go`** — `rowScanner` interface is unused, `scanVMRow` uses an inline interface, duplicate section comment headers.
+
+**8.** **`hasArgFlag` / `hasFlag` duplication** — two functions with overlapping purpose in different files, creating hidden cross-file coupling.
 
 ### ℹ️ Low Severity (2)
 
-8. **4 TODO stubs** — 3 in VM integration tests (incomplete assertions), 1 in agent heartbeat (unfinished dispatch).
+**9.** **4 TODO stubs** — 3 in VM integration tests (incomplete assertions), 1 in agent heartbeat (unfinished dispatch).
 
-9. **`internal/admin/embed.go` pre-existing `//go:embed` issue** — empty `web/templates` dir. Known issue, not introduced by any track work.
+**10.** **`internal/admin/embed.go` pre-existing `//go:embed` issue** — empty `web/templates` dir. Known issue, not introduced by any track work.
 
 ---
 

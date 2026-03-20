@@ -208,52 +208,58 @@ Phases 1-2 of the original spec are substantially complete. The following code e
 
 ### 5.1 What's Built & Working
 
-| Package | Key Files | Lines | Status | What It Does |
-|---|---|---|---|---|
-| `cmd/exedevussy` | `main.go` | 180 | **Working** | Entry point, wires DB + SSH + proxy, graceful shutdown |
-| `internal/db` | `db.go`, `models.go`, `queries.go`, `db_test.go` | 1133 | **Working + Tested** | SQLite WAL, split reader/writer, 30+ queries, full CRUD |
-| `internal/db/migrations` | `001_initial.sql` | 88 | **Working** | Schema: users, ssh_keys, vms, vm_tags, shares, tokens |
-| `internal/auth` | `token.go`, `token_test.go`, `middleware.go` | 336 | **Working + Tested** | SSH key-based stateless tokens, HTTP Bearer middleware |
-| `internal/ssh` | `gateway.go`, `shell.go`, `commands.go`, `register.go`, `gateway_test.go` | 2125 | **Working + Tested** | SSH server, user registration, REPL shell, 16 commands |
-| `internal/vm` | `manager.go`, `firecracker.go`, `network.go`, `image.go` | 1307 | **Implemented** | VM lifecycle, Firecracker SDK, TAP/bridge networking, OCI pull + rootfs |
-| `internal/proxy` | `caddy.go`, `auth.go` | 540 | **Implemented** | Caddy API integration, forward-auth proxy |
-| `internal/gateway` | `metadata.go` | 327 | **Partial** | Metadata service, SSH keys, hostname, env. LLM + email are STUBS |
-| `internal/config` | `config.go` | 134 | **Unused** | Config struct from env vars -- not wired into main.go |
-| `images/ussyuntu` | `Dockerfile`, `init-exedev.sh`, configs | 311 | **Working** | Ubuntu 24.04 base image with Go, Python, Node, systemd |
+> **Note:** This inventory was updated after Tracks A-G completion. See PROGRESS-*.md files for
+> detailed implementation notes. 62 Go files, 20,442 lines, 80+ tests across 12 suites.
 
-### 5.2 What's NOT Built Yet
+| Package | Key Files | Status | What It Does |
+|---|---|---|---|
+| `cmd/ussycode` | `main.go` | **Working** | Entry point, wires DB + SSH + proxy + API + admin + metadata + email + LLM, graceful shutdown. Config package fully integrated. |
+| `cmd/ussyverse-agent` | `main.go` | **Working** | Agent binary with join/run/status/version subcommands |
+| `internal/db` | `db.go`, `models.go`, `queries.go` + 4 test files | **Working + Tested** | SQLite WAL, 9 migrations (001-009), 40+ queries, full CRUD, quota enforcement |
+| `internal/auth` | `token.go`, `token_test.go`, `middleware.go` | **Working + Tested** | SSH key-based stateless tokens, HTTP Bearer middleware, handle generation |
+| `internal/ssh` | `gateway.go`, `shell.go`, `commands.go`, `browser.go`, `tutorial.go`, `arena.go`, `community.go`, `register.go` | **Working + Tested** | SSH server, 17+ commands, tutorial (10 lessons), arena, community |
+| `internal/vm` | `manager.go`, `firecracker.go`, `network.go`, `image.go`, `nftables.go` | **Working + Tested** | VM lifecycle, Firecracker SDK, TAP/bridge networking, OCI pull + rootfs, nftables firewall |
+| `internal/proxy` | `caddy.go`, `auth.go` | **Implemented (no tests)** | Caddy admin API integration, forward-auth proxy with identity headers |
+| `internal/gateway` | `metadata.go`, `llm.go`, `email.go`, `email_send.go`, `crypto.go` | **Working + Tested** | Metadata service, LLM gateway (5 providers, BYOK, rate limiting), inbound SMTP + Maildir, outbound email |
+| `internal/api` | `handler.go`, `handler_test.go`, `ratelimit.go` | **Working + Tested** | POST /exec, GET /health, GET /version; usy0/usy1 tokens; rate limiting. **Note: executor/KeyResolver/Config nil in main.go** |
+| `internal/admin` | `admin.go`, `admin_test.go`, `embed.go` | **Working + Tested** | Web panel with login, dashboard, users, VMs, nodes; magic link auth; 27 tests |
+| `internal/config` | `config.go`, `config_test.go` | **Working** | 30+ config fields, env var + CLI flag precedence, validation. Wired into main.go. |
+| `internal/storage` | `zfs.go`, `zfs_test.go`, `zfs_bench_test.go` | **Working + Tested** | StorageBackend interface, ZFSBackend with clone/destroy/resize/usage. 14 tests. **Not yet used by VM manager.** |
+| `internal/pki` | `ca.go`, `ca_test.go` | **Working + Tested** | Ed25519 CA chain, cert issuance, join tokens, verification. 7 tests. |
+| `internal/scheduler` | `scheduler.go`, `scheduler_test.go` | **Working + Tested** | Two-phase filter+score placement algorithm. 10 tests. |
+| `internal/controlplane` | `nodemanager.go` | **Implemented (no tests)** | Node tracking, health states, timeout checker, command queue |
+| `internal/agent` | `agent.go`, `heartbeat.go` | **Scaffolded (no tests)** | Agent join/run structure. gRPC transport not yet implemented. Heartbeat loop defined but not invoked. |
+| `internal/mesh` | `wireguard.go`, `allocator.go` | **Stub + Working** | WireGuard: stub (in-memory). Subnet allocator: working (/24 from 100.64.0.0/10). |
+| `images/ussyuntu` | `Dockerfile`, `init-ussycode.sh`, configs | **Working** | Ubuntu 24.04 base image with Go 1.24, Python 3, Node 22, systemd |
+| `deploy/` | Ansible roles, installers | **Working** | 6 Ansible roles, agent/control-plane installers |
 
-| Component | Status | Track Assignment |
+### 5.2 Remaining Work
+
+> Most items from the original "NOT BUILT" list are now complete. See PLAN-exe-dev-parity-roadmap.md
+> for the current parity roadmap.
+
+| Component | Status | Reference |
 |---|---|---|
-| LLM Gateway proxy (actual implementation) | STUB | Track D |
-| Email send/receive gateway | STUB | Track D |
-| `tutorial` command (guided onboarding) | NOT STARTED | Track C |
-| `browser` command (magic link) | NOT STARTED | Track C |
-| `doc` command (inline docs) | NOT STARTED | Track C |
-| HTTPS API (`POST /exec` endpoint) | NOT STARTED | Track E |
-| Project templates (`--template=`) | NOT STARTED | Track C |
-| BattleBussy arena integration | NOT STARTED | Track F |
-| Admin web panel | NOT STARTED | Track E |
-| Trust levels & resource quotas | NOT STARTED | Track E |
-| Agent binary (Ussyverse Server Pool) | NOT STARTED | Track B |
-| WireGuard mesh networking | NOT STARTED | Track B |
-| gRPC control plane API | NOT STARTED | Track B |
-| VM placement scheduler | NOT STARTED | Track B |
-| Custom domains (CNAME) | NOT STARTED | Track E |
-| ZFS storage backend (current: basic) | NOT STARTED | Track A |
-| nftables migration (current: iptables) | NOT STARTED | Track A |
-| Config package wired into main.go | NOT STARTED | Track A |
-| Deployment tooling (Ansible/Terraform) | NOT STARTED | Track G |
+| API runtime wiring (executor/KeyResolver/Config nil) | **BLOCKED** | Phase 0 in parity plan |
+| Browser auth URL handler (magic-link 404) | **BLOCKED** | Phase 0 in parity plan |
+| `doc` command | **NOT STARTED** | Track C pending |
+| `new --env/--command/--prompt` support | **NOT STARTED** | Phase 1 in parity plan |
+| Share link redemption in proxy | **NOT STARTED** | Phase 2 in parity plan |
+| Telemetry/observability | **NOT STARTED** | Phase 0 in parity plan |
+| gRPC transport for agent join | **NOT STARTED** | Phase 7 in parity plan |
+| Production WireGuard (tailscale/DERP) | **NOT STARTED** | Phase 7 in parity plan |
+| VM manager ↔ StorageBackend integration | **NOT STARTED** | Phase 7 in parity plan |
+| Team model | **NOT STARTED** | Phase 6 in parity plan |
 
-### 5.3 Rename Required
+### 5.3 Rename Status: ✅ COMPLETE
 
-The codebase currently uses `exedevussy` as the module name and internal references. As part of this spec, ALL code must be renamed:
-- Module: `github.com/mojomast/exedevussy` -> `github.com/mojomast/ussycode`
-- Binary: `exedevussy` -> `ussycode`
-- Directory: `cmd/exedevussy/` -> `cmd/ussycode/`
-- Internal references: `exedev` -> `ussycode` (user-facing strings, paths)
-- Base image user: `exedev` -> `ussycode`
-- Config env prefix: `EXEDEV_` -> `USSYCODE_`
+The codebase rename from `exedevussy` to `ussycode` was completed in Track A.1:
+- Module: `github.com/mojomast/ussycode` ✅
+- Binary: `ussycode` ✅
+- Directory: `cmd/ussycode/` ✅
+- Internal references: `ussycode` throughout ✅
+- Base image user: `ussycode` ✅
+- Config env prefix: `USSYCODE_` ✅
 
 ---
 
@@ -554,6 +560,10 @@ Ubuntu 24.04 base with systemd, configured for ussycode:
 ---
 
 ## 10. PARALLEL DEVELOPMENT TRACKS
+
+> **Status update:** Tracks A, B, E, F, G are COMPLETE. Track C is 1/5 done (tutorial only).
+> Track D was merged into Track E. See PROGRESS-*.md files for implementation details.
+> The next phase of work is defined in PLAN-exe-dev-parity-roadmap.md (exe.dev product parity).
 
 The spec is organized into **7 independent development tracks** that can be executed in parallel by separate agents/developers. Each track has clear boundaries, interfaces, and test criteria.
 

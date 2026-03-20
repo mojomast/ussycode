@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/mojomast/ussycode/internal/db"
+	"github.com/mojomast/ussycode/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -113,11 +115,22 @@ type ErrorResponse struct {
 }
 
 func (h *Handler) handleExec(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, span := telemetry.Start(r.Context(), "api.exec",
+		attribute.String("http.method", r.Method),
+		attribute.String("http.route", "/exec"),
+	)
+	defer span.End()
+	started := time.Now()
+	result := "ok"
+	cmdName := ""
+	defer func() {
+		telemetry.RecordExec(ctx, cmdName, result, time.Since(started))
+	}()
 
 	// Authenticate the request
 	user, perms, fingerprint, err := h.authenticate(ctx, r)
 	if err != nil {
+		result = "auth_failed"
 		h.logger.Debug("authentication failed", "error", err, "remote", r.RemoteAddr)
 		h.writeError(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
 		return
@@ -125,27 +138,37 @@ func (h *Handler) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	// Rate limit by fingerprint
 	if fingerprint != "" && !h.limiter.Allow(fingerprint) {
+		result = "rate_limited"
 		retryAfter := h.limiter.RetryAfter(fingerprint)
 		w.Header().Set("Retry-After", fmt.Sprintf("%.0f", retryAfter.Seconds()+1))
 		h.writeError(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
 
+	if h.exec == nil {
+		result = "executor_unavailable"
+		h.logger.Error("API executor is not configured")
+		h.writeError(w, "API executor unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
 	// Read the command from the request body
 	command, err := h.readCommand(r)
 	if err != nil {
+		result = "bad_request"
 		h.writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if command == "" {
+		result = "empty_command"
 		h.writeError(w, "empty command", http.StatusBadRequest)
 		return
 	}
 
 	// Parse command into name + args
 	parts := strings.Fields(command)
-	cmdName := parts[0]
+	cmdName = parts[0]
 	cmdArgs := parts[1:]
 
 	// Check command permissions (if restricted)
@@ -158,6 +181,7 @@ func (h *Handler) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !allowed {
+			result = "forbidden"
 			h.writeError(w, fmt.Sprintf("command %q not permitted by token", cmdName), http.StatusForbidden)
 			return
 		}
@@ -177,9 +201,11 @@ func (h *Handler) handleExec(w http.ResponseWriter, r *http.Request) {
 	output, exitCode, err := h.exec.Execute(execCtx, user, cmdName, cmdArgs)
 	if err != nil {
 		if execCtx.Err() == context.DeadlineExceeded {
+			result = "timeout"
 			h.writeError(w, "command timed out", http.StatusGatewayTimeout)
 			return
 		}
+		result = "command_failed"
 		h.logger.Error("command execution failed",
 			"user", user.Handle,
 			"command", cmdName,
@@ -294,6 +320,10 @@ func (h *Handler) authenticateStateless(ctx context.Context, token string) (*db.
 	user, err := h.db.UserByHandle(ctx, perms.Ctx)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("unknown user")
+	}
+
+	if h.keyResolver == nil {
+		return nil, nil, "", fmt.Errorf("stateless token verification unavailable")
 	}
 
 	// Resolve the user's SSH keys

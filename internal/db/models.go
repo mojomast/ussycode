@@ -164,6 +164,17 @@ type MagicToken struct {
 	Used      bool
 }
 
+// AuditLog records a security- or admin-relevant action.
+type AuditLog struct {
+	ID         int64
+	ActorID    sql.NullInt64
+	Action     string
+	TargetType string
+	TargetID   sql.NullString
+	Detail     sql.NullString
+	CreatedAt  SQLiteTime
+}
+
 // ArenaMatch represents a CTF/agent competition match.
 type ArenaMatch struct {
 	ID          int64

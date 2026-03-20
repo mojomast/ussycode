@@ -1,0 +1,129 @@
+{
+  "seedVersion": 3,
+  "generatedAt": "2026-03-20T05:22:24.230Z",
+  "sourceCommit": "dba647554a267b1253280da361e77617ba4d8cef",
+  "generatorVersion": "2026-03-11.2",
+  "seederPromptVersion": "2026-03-11.2",
+  "suggestionPromptVersion": "2026-03-11.1",
+  "configFingerprint": "sha256:c2878e7914f05a0b766247efefabd7d217cdd0a9adba57c9a0492030ac65b4ad",
+  "projectIntentSummary": "ussycode is an open-source, self-hosted development environment platform for the Ussyverse. The core product vision is an SSH-first experience where a user can run `ssh ussyco.de` and quickly land in a usable dev environment without a signup flow or credit card, with SSH keys serving as identity. The repository frames this as community infrastructure: a free compute layer for learners, developers, and agents, plus a way for anyone to contribute hardware to a federated Ussyverse Server Pool. The docs consistently describe a platform built around instant provisioning, persistent disks, automatic HTTPS endpoints, and built-in AI-agent support. At the system level, the project aims to unify user-facing dev workflows with backend orchestration: Firecracker microVMs for isolation and speed, ZFS-backed storage for persistence and cloning, Caddy for TLS and reverse proxying, SQLite for embedded state, and a Go control plane that can run as a single-node binary or coordinate a multi-node cluster through gRPC/mTLS and WireGuard. In short, the repository’s intent is not just to run VMs, but to provide an approachable, community-powered cloud-like dev environment whose primary interface is still SSH, while web access, APIs, and agent scheduling are first-class extensions.",
+  "objectivesSummary": "The main objectives visible in the docs are: make dev environments instantly available over SSH; preserve user state through persistent VM disks; automate VM lifecycle operations; and route both SSH and web traffic cleanly. The architecture and spec further break this into operational goals: manage Firecracker microVMs, generate rootfs images from OCI layers, allocate per-VM network interfaces and firewall rules, and expose per-VM HTTPS services via Caddy. A second major objective is federation: allow contributor nodes to join as agents, establish secure control-plane communication, send heartbeats, and receive VM placement from a scheduler. A third objective is UX growth: the repo plans for tutorials, browser magic links, inline documentation, templates, and richer SSH commands so the platform remains usable for newcomers. A fourth objective is administrative control: a public API, admin panel, trust levels, quotas, custom domains, and audit-friendly workflows for operators. The repo also has an execution objective embedded in its own process: divide work into parallel tracks, keep each track independently shippable, and verify every step with builds/tests and progress updates. Overall, the project is trying to become a polished self-hosted platform where SSH is the front door, but the backend supports scalable distributed compute and operator workflows.",
+  "constraintsSummary": "The repository encodes several technical and procedural constraints. Technically, the platform assumes Go 1.25+, Linux x86_64 hosts with KVM support, root-level privileges for VM networking and Firecracker jailer operations, Firecracker availability, ZFS for persistent storage, Caddy for TLS/reverse proxying, and SQLite in WAL mode for embedded state. The distributed architecture depends on gRPC/mTLS for agent-to-control-plane communication and WireGuard for encrypted mesh networking, with NAT traversal assumptions called out in the docs. SSH keys are the identity primitive, so the product avoids a traditional signup/account system. The design also relies on per-VM isolation via TAP interfaces, nftables rules, and microVM boundaries, with a minimal attack surface emphasized throughout. Procedurally, the repo imposes a disciplined development protocol: read the spec first, work by defined tracks, run build/test checks after each task, update the relevant progress file, and use prescribed commit messages. Track dependencies matter as well: some work can happen in parallel, while other work depends on earlier storage/network/core-hardening pieces. A practical constraint is documentation drift: the README, spec, devplan, and handoff materials do not all tell the same completion story, so source-level verification is required before trusting status labels.",
+  "principlesGuidelinesSummary": "The clearest project principles and conventions come from `PROMPT.md`, `spec.md`, `devplan.md`, `handoff.md`, and the community docs. The central operating principle is explicit: treat the spec as the source of truth, split work into the defined tracks, and execute independent tracks in parallel where possible. The process is intentionally incremental and verifiable: after each task, build, test, fix failures, update the appropriate `PROGRESS-*.md` file, and commit with a track-specific message format. That reflects a strong bias toward small, auditable changes instead of large unreviewed rewrites. There is also a naming and structural convention: the repo treats the rename from `exedevussy` to `ussycode` as a foundational change, and the codebase is organized around a single Go binary plus clear internal package boundaries. Security and operational caution are recurring guidelines: use mTLS for node auth, WireGuard for encrypted mesh networking, Firecracker jailer for defense in depth, rate limiting on public interfaces, and explicit trust/quotas for administrative control. The community-facing docs add another layer of conventions: joining the pool should be easy, installer-driven, and token-based; trust levels should govern capacity and privilege; and compute contribution is framed as a shared, open-source civic resource. Taken together, the repo’s working style is highly procedural, security-aware, and optimized for reproducible infrastructure with clear status tracking.",
+  "implementationStatusSummary": "The repository appears substantially built and relatively mature on the core control-plane side, but its status documentation is inconsistent. The root README describes a working single-node architecture and lists core packages for auth, DB, SSH, VM management, proxying, and metadata. The current `cmd/ussycode/main.go` shows a full control-plane composition: config loading, database migration, VM manager setup, metadata service, LLM gateway hookup, email sender/SMTP, proxy manager, SSH gateway, HTTP API, and admin web panel. A second entrypoint exists at `cmd/ussyverse-agent/main.go`, indicating the agent-side binary is also present. Supporting docs and handoff notes claim that Track G is complete and that `go build ./...` and `go test ./...` pass cleanly, while `devplan.md` marks Tracks A, E, and G as complete. However, the README/spec still contain older partial/not-started status language for some phase-3 items, so the precise completion state for all tracks cannot be trusted without inspecting more source. The safest conclusion is that the repo has strong implemented foundations and some later-stage features already wired in, but remaining gaps and documentation drift should be verified directly in code.",
+  "topObjectives": [
+    "Preserve the SSH-first instant dev-environment experience",
+    "Keep the Firecracker/ZFS/Caddy/SQLite core reliable and secure",
+    "Support a federated Ussyverse Server Pool with secure agent enrollment and scheduling",
+    "Improve onboarding and UX with tutorials, docs, magic links, and templates",
+    "Provide API/admin features for automation, trust, quotas, and custom domains",
+    "Maintain disciplined parallel development with build/test/progress-file workflow"
+  ],
+  "constraints": [
+    "Go 1.25+ and Linux/KVM are baseline requirements",
+    "Firecracker, ZFS, Caddy, and SQLite WAL are foundational dependencies",
+    "Root privileges are required for VM networking and jailer operations",
+    "Multi-node communication depends on gRPC/mTLS and WireGuard mesh networking",
+    "SSH keys are the primary identity model; there is no signup flow",
+    "Public interfaces need auth, rate limiting, and trust/quotas enforcement",
+    "Progress tracking and build/test verification are part of the development protocol",
+    "Repository status docs may lag source reality, so verification must be source-driven"
+  ],
+  "keyFiles": [
+    {
+      "path": "README.md",
+      "hash": "sha256:7ff29861614528a88e1bedc2367b414262aaccff150d511e7b2a512714a4d90e",
+      "whyImportant": "High-level project overview, vision statement, architecture sketch, tech stack, status, and build/run guidance.",
+      "category": "vision"
+    },
+    {
+      "path": "spec.md",
+      "hash": "sha256:a91011d51f292effef8aaf6949d5cc4778b45b60895ae443fc70d10cd84949a5",
+      "whyImportant": "Primary product specification covering vision, architecture, tracks, security model, testing strategy, and success metrics.",
+      "category": "vision"
+    },
+    {
+      "path": "docs/architecture.md",
+      "hash": "sha256:7e61f995eb50c564191eb8c5e268637593b45b6af30e0f343847c246d435d28a",
+      "whyImportant": "Detailed system architecture with component breakdowns, diagrams, and interface contracts.",
+      "category": "architecture"
+    },
+    {
+      "path": "PROMPT.md",
+      "hash": "sha256:315c1c299ffb71d990b21dd80823fb6a2d27a076ac752485f654f17476b57872",
+      "whyImportant": "Defines the autonomous development mission, track structure, execution order, and workflow conventions.",
+      "category": "principles_guidelines"
+    },
+    {
+      "path": "devplan.md",
+      "hash": "sha256:dd6563c019e3a64a7249f84d1ae1933c9956ccf4cb76bdf41b441e31d870313e",
+      "whyImportant": "Records track completion status and reflects the repo’s implementation workflow conventions.",
+      "category": "principles_guidelines"
+    },
+    {
+      "path": "handoff.md",
+      "hash": "sha256:78434294a79fe22253b537acd0bafe6ec4f7ab5ff51acb7480acf0a73ef3ec93",
+      "whyImportant": "Most recent status handoff; summarizes completed work, build/test claims, and known caveats.",
+      "category": "principles_guidelines"
+    },
+    {
+      "path": "docs/contributing-compute.md",
+      "hash": "sha256:82f05219a2c4ddb5413c088e60e4b0afc841387f7853455cb4028e30148c29e6",
+      "whyImportant": "Explains the community compute contribution model, installer flow, trust levels, and node operation norms.",
+      "category": "principles_guidelines"
+    },
+    {
+      "path": "cmd/ussycode/main.go",
+      "hash": "sha256:82c03330153bcf82b5839d36662ed8296a33e5628a415f488be6ab423d9824fb",
+      "whyImportant": "Primary control-plane entrypoint wiring together config, DB, VM, proxy, gateway, API, and admin subsystems.",
+      "category": "code_entrypoint"
+    },
+    {
+      "path": "cmd/ussyverse-agent/main.go",
+      "hash": "sha256:85758da20ca063704efae0b8fa10db4ab98f589a817991c0aca8651f2380cd85",
+      "whyImportant": "Agent-side executable entrypoint that supports the multi-node/server-pool architecture.",
+      "category": "code_entrypoint"
+    }
+  ],
+  "categoryFindings": {
+    "vision": {
+      "found": true,
+      "rationale": "The repository explicitly states its vision in README, spec, and community docs: instant SSH-accessible dev environments, free/community compute, persistent disks, automatic HTTPS, and AI-agent support for the Ussyverse.",
+      "files": [
+        "README.md",
+        "spec.md",
+        "docs/contributing-compute.md"
+      ]
+    },
+    "architecture": {
+      "found": true,
+      "rationale": "Architecture is thoroughly documented with diagrams and component descriptions spanning the control plane, SSH gateway, VM manager, Firecracker microVMs, storage, proxying, scheduler, mesh networking, and agent nodes.",
+      "files": [
+        "README.md",
+        "spec.md",
+        "docs/architecture.md"
+      ]
+    },
+    "principles_guidelines": {
+      "found": true,
+      "rationale": "There are strong process and convention sources: the orchestrator prompt, spec, dev plan, handoff notes, and community docs define parallel-track execution, build/test loops, progress files, commit formats, and security/ops expectations.",
+      "files": [
+        "PROMPT.md",
+        "spec.md",
+        "devplan.md",
+        "handoff.md",
+        "docs/contributing-compute.md"
+      ]
+    }
+  },
+  "openQuestions": [
+    "Are the older README/spec status markers stale, or do some of the apparently complete subsystems still have unreflected gaps in source?",
+    "Which status artifact should be treated as authoritative going forward: handoff, devplan, README/spec, or the individual PROGRESS files?",
+    "How much of the multi-node agent/scheduler path is implemented beyond the presence of `cmd/ussyverse-agent/main.go`?",
+    "Are there still unresolved stubs or placeholder implementations in gateway, API, or admin-related packages that need direct source inspection?",
+    "Should follow-up reseeds prioritize code inspection of `internal/` and `cmd/` to reconcile documentation drift with actual implementation state?"
+  ],
+  "reseedNotes": "This seed was built from the repo’s documentation, process artifacts, and the main control-plane entrypoint. Vision, architecture, and guidelines are well documented and clearly present. The main remaining risk is status drift: multiple docs claim different completion states, so future reseeds should verify source code in `internal/` and `cmd/` before trusting any completion labels.",
+  "lastReseedReason": "initial_missing",
+  "lastChangedFiles": []
+}

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/mojomast/ussycode/internal/db"
+	"github.com/mojomast/ussycode/internal/telemetry"
 )
 
 // --- Session management ---
@@ -266,6 +267,8 @@ func (h *Handler) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 // handleLoginCallback handles the magic link callback.
 // The token is passed as a query parameter: /admin/login/callback?token=xxx
 func (h *Handler) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
+	ctx, span := telemetry.Start(r.Context(), "admin.magic_login_callback")
+	defer span.End()
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		http.Redirect(w, r, "/admin/login?error=missing+token", http.StatusSeeOther)
@@ -273,12 +276,14 @@ func (h *Handler) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the magic token (consumes it)
-	user, err := h.db.ValidateMagicToken(r.Context(), token)
+	user, err := h.db.ValidateMagicToken(ctx, token)
 	if err != nil {
+		telemetry.RecordBrowserToken(ctx, "redeem_failed")
 		h.logger.Warn("admin login failed", "error", err)
 		http.Redirect(w, r, "/admin/login?error=invalid+or+expired+token", http.StatusSeeOther)
 		return
 	}
+	telemetry.RecordBrowserToken(ctx, "redeemed")
 
 	// Check trust level — must be operator or admin
 	if user.TrustLevel != "operator" && user.TrustLevel != "admin" {
@@ -442,6 +447,13 @@ func (h *Handler) handleSetTrustLevel(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to set trust level", "error", err, "user_id", id, "level", newLevel)
 		http.Redirect(w, r, fmt.Sprintf("/admin/users/%d?error=failed+to+update", id), http.StatusSeeOther)
 		return
+	}
+
+	actorID := sess.UserID
+	targetID := strconv.FormatInt(id, 10)
+	detail := fmt.Sprintf("trust_level=%s", newLevel)
+	if _, err := h.db.CreateAuditLog(ctx, &actorID, "admin.user.trust_level.set", "user", &targetID, &detail); err != nil {
+		h.logger.Warn("failed to write audit log", "error", err, "actor", sess.Handle, "user_id", id, "new_level", newLevel)
 	}
 
 	h.logger.Info("trust level updated",

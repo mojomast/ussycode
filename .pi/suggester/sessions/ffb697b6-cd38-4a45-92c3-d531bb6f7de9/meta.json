@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "ffb697b6-cd38-4a45-92c3-d531bb6f7de9",
+  "sessionFile": "/home/shuv/.pi/agent/sessions/--home-shuv-repos-ussycode--/2026-03-20T05-20-54-614Z_ffb697b6-cd38-4a45-92c3-d531bb6f7de9.jsonl",
+  "cwd": "/home/shuv/repos/ussycode",
+  "ignoreLegacyPiSessionEntries": true,
+  "legacyMigration": {
+    "performedAt": "2026-03-20T05:20:54.650Z",
+    "importedLegacyEntries": false,
+    "legacyStateEntryCount": 0,
+    "legacyUsageEntryCount": 0,
+    "note": "Legacy suggester-state/suggester-usage pi session entries were imported once into extension-owned storage and are ignored afterwards."
+  }
+}

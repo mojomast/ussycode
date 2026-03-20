@@ -19,7 +19,9 @@ import (
 	"github.com/mojomast/ussycode/internal/gateway"
 	"github.com/mojomast/ussycode/internal/proxy"
 	sshgw "github.com/mojomast/ussycode/internal/ssh"
+	"github.com/mojomast/ussycode/internal/telemetry"
 	"github.com/mojomast/ussycode/internal/vm"
+	"golang.org/x/crypto/ssh"
 )
 
 func main() {
@@ -39,6 +41,12 @@ func main() {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
 	slog.SetDefault(logger)
+
+	telemetryShutdown, err := telemetry.Setup(context.Background(), "ussycode", api.Version, logger.With("component", "telemetry"))
+	if err != nil {
+		logger.Warn("telemetry setup failed; continuing without OTLP export", "error", err)
+	}
+	defer telemetryShutdown(context.Background())
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.SetOutput(os.Stderr)
@@ -147,8 +155,25 @@ func main() {
 		log.Printf("Routussy integration enabled: %s", cfg.RoutussyURL)
 	}
 
-	// Initialize API handler
-	apiHandler := api.NewHandler(database, nil, nil, logger.With("component", "api"), nil)
+	// Initialize API handler using the same command surface as the SSH gateway.
+	apiExecutor := sshgw.NewAPIExecutor(gw)
+	keyResolver := func(ctx context.Context, userID int64) ([]ssh.PublicKey, error) {
+		keys, err := database.SSHKeysByUser(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		resolved := make([]ssh.PublicKey, 0, len(keys))
+		for _, key := range keys {
+			pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key.PublicKey))
+			if err != nil {
+				logger.Warn("skipping invalid SSH key during API auth", "user_id", userID, "key_id", key.ID, "error", err)
+				continue
+			}
+			resolved = append(resolved, pub)
+		}
+		return resolved, nil
+	}
+	apiHandler := api.NewHandler(database, apiExecutor, keyResolver, logger.With("component", "api"), &api.Config{})
 
 	// Initialize admin web panel
 	webFS, err := fs.Sub(admin.WebFS, "web")

@@ -220,6 +220,8 @@ All errors return:
 
 ## Available Commands
 
+> **`--json` support:** Most list/query commands support `--json` for machine-readable output. Currently verified: `ls --json`, `ssh-key list --json`, `share list --json`.
+
 All SSH shell commands are available via `POST /exec`:
 
 | Command | Description |

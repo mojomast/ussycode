@@ -1,0 +1,1246 @@
+package ssh
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	mathrand "math/rand"
+	"net"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	gossh "golang.org/x/crypto/ssh"
+)
+
+// CommandFunc is a handler for a shell command.
+type CommandFunc func(s *Shell, args []string) error
+
+var commands = map[string]CommandFunc{
+	"help":    cmdHelp,
+	"whoami":  cmdWhoami,
+	"ls":      cmdLs,
+	"new":     cmdNew,
+	"rm":      cmdRm,
+	"ssh":     cmdSSH,
+	"stop":    cmdStop,
+	"restart": cmdRestart,
+	"tag":     cmdTag,
+	"rename":  cmdRename,
+	"cp":      cmdCp,
+	"start":   cmdStart,
+	"ssh-key": cmdSSHKey,
+	"share":   cmdShare,
+}
+
+// ── help ──────────────────────────────────────────────────────────────
+
+func cmdHelp(s *Shell, args []string) error {
+	s.writeln("")
+	s.writeln("  \033[1m=== EXEDEVUSSY COMMANDS ===\033[0m")
+	s.writeln("")
+	s.writeln("  \033[33mBASICS\033[0m")
+	s.writeln("    help          show this help")
+	s.writeln("    whoami        show your info")
+	s.writeln("    exit          disconnect")
+	s.writeln("")
+	s.writeln("  \033[33mVM LIFECYCLE\033[0m")
+	s.writeln("    new           create a new dev environment")
+	s.writeln("    ls            list your environments")
+	s.writeln("    rm <name>     delete an environment")
+	s.writeln("    start <name>  start a stopped environment")
+	s.writeln("    stop <name>   stop a running environment")
+	s.writeln("    restart <name> restart an environment")
+	s.writeln("    rename <old> <new>  rename an environment")
+	s.writeln("    cp <name> [new]     clone an environment")
+	s.writeln("    tag <name> <tag>    add a tag")
+	s.writeln("    tag -d <name> <tag> remove a tag")
+	s.writeln("")
+	s.writeln("  \033[33mACCESS\033[0m")
+	s.writeln("    ssh <name>    connect to an environment")
+	s.writeln("    share         share access with others")
+	s.writeln("")
+	s.writeln("  \033[33mIDENTITY\033[0m")
+	s.writeln("    ssh-key       manage your SSH keys")
+	s.writeln("")
+	s.writeln("  \033[33mOPTIONS\033[0m")
+	s.writeln("    new --name=<n> --image=<img>")
+	s.writeln("    ls -l         long format")
+	s.writeln("    --json        machine-readable output (on most commands)")
+	s.writeln("")
+	return nil
+}
+
+// ── whoami ────────────────────────────────────────────────────────────
+
+func cmdWhoami(s *Shell, args []string) error {
+	ctx := context.Background()
+
+	fp, _ := s.gw.DB.FingerprintByUser(ctx, s.user.ID)
+	vmCount, _ := s.gw.DB.VMCountByUser(ctx, s.user.ID)
+
+	s.writeln("")
+	s.writef("  handle:      %s\n", s.user.Handle)
+	s.writef("  trust level: %s\n", s.user.TrustLevel)
+	s.writef("  fingerprint: %s\n", fp)
+	s.writef("  vms:         %d\n", vmCount)
+	s.writef("  member since: %s\n", s.user.CreatedAt.Format("Jan 2, 2006"))
+	s.writeln("")
+	return nil
+}
+
+// ── ls ────────────────────────────────────────────────────────────────
+
+func cmdLs(s *Shell, args []string) error {
+	ctx := context.Background()
+	vms, err := s.gw.DB.VMsByUser(ctx, s.user.ID)
+	if err != nil {
+		return fmt.Errorf("list vms: %w", err)
+	}
+
+	if len(vms) == 0 {
+		s.writeln("  no environments yet. type 'new' to create one.")
+		return nil
+	}
+
+	long := false
+	for _, a := range args {
+		if a == "-l" || a == "--long" {
+			long = true
+		}
+	}
+
+	s.writeln("")
+	if long {
+		s.writef("  %-16s %-10s %-14s %4s %6s %5s  %s\n",
+			"NAME", "STATUS", "IMAGE", "CPU", "MEM", "DISK", "CREATED")
+		s.writef("  %-16s %-10s %-14s %4s %6s %5s  %s\n",
+			"────", "──────", "─────", "───", "───", "────", "───────")
+		for _, v := range vms {
+			s.writef("  %-16s %-10s %-14s %4d %4dMB %3dGB  %s\n",
+				v.Name, colorStatus(v.Status), v.Image,
+				v.VCPU, v.MemoryMB, v.DiskGB, relativeTime(v.CreatedAt.Time))
+		}
+	} else {
+		s.writef("  %-16s %-10s %-14s %s\n", "NAME", "STATUS", "IMAGE", "CREATED")
+		s.writef("  %-16s %-10s %-14s %s\n", "────", "──────", "─────", "───────")
+		for _, v := range vms {
+			s.writef("  %-16s %-10s %-14s %s\n",
+				v.Name, colorStatus(v.Status), v.Image, relativeTime(v.CreatedAt.Time))
+		}
+	}
+	s.writeln("")
+	return nil
+}
+
+// ── new ───────────────────────────────────────────────────────────────
+
+var validName = regexp.MustCompile(`^[a-z][a-z0-9-]{1,28}[a-z0-9]$`)
+
+func cmdNew(s *Shell, args []string) error {
+	ctx := context.Background()
+
+	name := ""
+	image := "ussyuntu"
+
+	for _, a := range args {
+		if strings.HasPrefix(a, "--name=") {
+			name = strings.TrimPrefix(a, "--name=")
+		} else if strings.HasPrefix(a, "--image=") {
+			image = strings.TrimPrefix(a, "--image=")
+		}
+	}
+
+	if name == "" {
+		name = randomName()
+	}
+
+	name = strings.ToLower(name)
+	if !validName.MatchString(name) {
+		return fmt.Errorf("invalid name %q: must be 3-30 chars, lowercase letters/numbers/hyphens, start with letter", name)
+	}
+
+	// Check for duplicate
+	existing, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, name)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check existing: %w", err)
+	}
+	if existing != nil && err == nil {
+		return fmt.Errorf("vm %q already exists", name)
+	}
+
+	// Use defaults: 1 vCPU, 512MB RAM, 5GB disk
+	vmRecord, err := s.gw.DB.CreateVM(ctx, s.user.ID, name, image, 1, 512, 5)
+	if err != nil {
+		return fmt.Errorf("create vm: %w", err)
+	}
+
+	s.writef("  creating %s...", name)
+
+	// Provision and start the VM via the manager
+	if s.gw.VM != nil {
+		if err := s.gw.VM.CreateAndStart(ctx, vmRecord.ID, name, image, 1, 512); err != nil {
+			// VM creation failed -- update DB status but don't remove the record
+			// so user can see it in `ls` and retry or `rm` it
+			s.writef(" failed!\n")
+			return fmt.Errorf("provision vm: %w", err)
+		}
+
+		// Register metadata for the newly started VM
+		s.registerVMMetadata(ctx, vmRecord.ID, name, image)
+
+		// Register proxy route for HTTPS access
+		s.addProxyRoute(ctx, vmRecord.ID, name)
+	} else {
+		// No VM manager available (dev mode) -- just mark as stopped
+		_ = s.gw.DB.UpdateVMStatus(ctx, vmRecord.ID, "stopped", nil, nil, nil, nil)
+	}
+
+	s.writeln(" done!")
+	s.writeln("")
+	s.writef("  name:  %s\n", vmRecord.Name)
+	s.writef("  image: %s\n", vmRecord.Image)
+	s.writef("  url:   https://%s.%s\n", vmRecord.Name, s.gw.domain)
+	s.writef("  ssh:   ssh %s (from this shell)\n", vmRecord.Name)
+	s.writeln("")
+	return nil
+}
+
+// ── ssh ───────────────────────────────────────────────────────────────
+
+func cmdSSH(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: ssh <name>")
+	}
+
+	ctx := context.Background()
+	name := args[0]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", name)
+		}
+		return fmt.Errorf("lookup: %w", err)
+	}
+
+	if vmRecord.Status != "running" {
+		return fmt.Errorf("vm %q is %s (must be running)", name, vmRecord.Status)
+	}
+
+	if !vmRecord.IPAddress.Valid || vmRecord.IPAddress.String == "" {
+		return fmt.Errorf("vm %q has no IP address assigned", name)
+	}
+
+	s.writef("  connecting to %s...\n", name)
+
+	// Proxy the SSH session through to the VM's SSH server.
+	// We dial the VM at port 22 using a host-level key, then pipe
+	// the user's gateway session I/O to the VM SSH session.
+	if err := proxySSHSession(s, vmRecord.IPAddress.String); err != nil {
+		return fmt.Errorf("ssh to %s: %w", name, err)
+	}
+
+	return nil
+}
+
+// proxySSHSession dials the VM's SSH server and pipes the gateway
+// user's terminal to the VM's shell session, handling window resize.
+func proxySSHSession(s *Shell, vmIP string) error {
+	addr := net.JoinHostPort(vmIP, "22")
+
+	// Use a host-level key to authenticate to the VM.
+	// The VM image is pre-configured to trust this key for the "exedev" user.
+	// For now, use password-less auth (the VM trusts connections from the host bridge).
+	config := &gossh.ClientConfig{
+		User: "exedev",
+		Auth: []gossh.AuthMethod{
+			// Try no-auth first (VMs may be configured to accept connections from host)
+			gossh.Password(""),
+		},
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		Timeout:         5 * time.Second,
+	}
+
+	// Dial the VM SSH server
+	client, err := gossh.Dial("tcp", addr, config)
+	if err != nil {
+		return fmt.Errorf("connect to VM at %s: %w", addr, err)
+	}
+	defer client.Close()
+
+	// Open a session
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("open session: %w", err)
+	}
+	defer session.Close()
+
+	// Request a PTY matching the user's terminal
+	ptyReq, winCh, isPty := s.session.Pty()
+	if isPty {
+		modes := gossh.TerminalModes{
+			gossh.ECHO:          1,
+			gossh.TTY_OP_ISPEED: 14400,
+			gossh.TTY_OP_OSPEED: 14400,
+		}
+		if err := session.RequestPty(ptyReq.Term, ptyReq.Window.Height, ptyReq.Window.Width, modes); err != nil {
+			return fmt.Errorf("request pty: %w", err)
+		}
+
+		// Forward window size changes
+		go func() {
+			for win := range winCh {
+				session.WindowChange(win.Height, win.Width)
+			}
+		}()
+	}
+
+	// Pipe I/O between the gateway session and the VM session
+	vmStdin, err := session.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("stdin pipe: %w", err)
+	}
+	vmStdout, err := session.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	vmStderr, err := session.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	// Start a shell in the VM
+	if err := session.Shell(); err != nil {
+		return fmt.Errorf("start shell: %w", err)
+	}
+
+	// Copy data in both directions
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	// Gateway -> VM (user input)
+	go func() {
+		defer wg.Done()
+		io.Copy(vmStdin, s.session)
+		vmStdin.Close()
+	}()
+
+	// VM stdout -> Gateway (output)
+	go func() {
+		defer wg.Done()
+		io.Copy(s.session, vmStdout)
+	}()
+
+	// VM stderr -> Gateway (errors)
+	go func() {
+		defer wg.Done()
+		io.Copy(s.session.Stderr(), vmStderr)
+	}()
+
+	// Wait for the VM session to exit
+	err = session.Wait()
+	wg.Wait()
+
+	if err != nil {
+		// Don't treat exit codes as errors to the user
+		if _, ok := err.(*gossh.ExitError); ok {
+			return nil
+		}
+		return err
+	}
+
+	return nil
+}
+
+// ── stop ──────────────────────────────────────────────────────────────
+
+func cmdStop(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: stop <name>")
+	}
+
+	ctx := context.Background()
+	name := args[0]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", name)
+		}
+		return fmt.Errorf("lookup: %w", err)
+	}
+
+	if vmRecord.Status != "running" {
+		return fmt.Errorf("vm %q is already %s", name, vmRecord.Status)
+	}
+
+	s.writef("  stopping %s...", name)
+
+	// Unregister from metadata before stopping
+	s.unregisterVMMetadata(ctx, vmRecord.ID)
+
+	// Remove proxy route
+	s.removeProxyRoute(ctx, name)
+
+	if s.gw.VM != nil {
+		if err := s.gw.VM.Stop(ctx, vmRecord.ID); err != nil {
+			s.writef(" failed!\n")
+			return fmt.Errorf("stop vm: %w", err)
+		}
+	} else {
+		_ = s.gw.DB.UpdateVMStatus(ctx, vmRecord.ID, "stopped", nil, nil, nil, nil)
+	}
+
+	s.writeln(" done.")
+	return nil
+}
+
+// ── restart ───────────────────────────────────────────────────────────
+
+func cmdRestart(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: restart <name>")
+	}
+
+	ctx := context.Background()
+	name := args[0]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", name)
+		}
+		return fmt.Errorf("lookup: %w", err)
+	}
+
+	s.writef("  restarting %s...", name)
+
+	if s.gw.VM != nil {
+		// Unregister metadata before stopping
+		s.unregisterVMMetadata(ctx, vmRecord.ID)
+
+		// Remove old proxy route
+		s.removeProxyRoute(ctx, name)
+
+		// Stop if running
+		if vmRecord.Status == "running" {
+			if err := s.gw.VM.Stop(ctx, vmRecord.ID); err != nil {
+				s.writef(" stop failed!\n")
+				return fmt.Errorf("stop vm: %w", err)
+			}
+		}
+		// Start again
+		if err := s.gw.VM.Start(ctx, vmRecord.ID, name, vmRecord.Image, vmRecord.VCPU, vmRecord.MemoryMB); err != nil {
+			s.writef(" start failed!\n")
+			return fmt.Errorf("start vm: %w", err)
+		}
+
+		// Re-register metadata
+		s.registerVMMetadata(ctx, vmRecord.ID, name, vmRecord.Image)
+
+		// Re-register proxy route
+		s.addProxyRoute(ctx, vmRecord.ID, name)
+	}
+
+	s.writeln(" done.")
+	return nil
+}
+
+// ── start ─────────────────────────────────────────────────────────────
+
+func cmdStart(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: start <name>")
+	}
+
+	ctx := context.Background()
+	name := args[0]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", name)
+		}
+		return fmt.Errorf("lookup: %w", err)
+	}
+
+	if vmRecord.Status == "running" {
+		return fmt.Errorf("vm %q is already running", name)
+	}
+
+	s.writef("  starting %s...", name)
+
+	if s.gw.VM != nil {
+		if err := s.gw.VM.Start(ctx, vmRecord.ID, name, vmRecord.Image, vmRecord.VCPU, vmRecord.MemoryMB); err != nil {
+			s.writef(" failed!\n")
+			return fmt.Errorf("start vm: %w", err)
+		}
+
+		// Register metadata and proxy route
+		s.registerVMMetadata(ctx, vmRecord.ID, name, vmRecord.Image)
+		s.addProxyRoute(ctx, vmRecord.ID, name)
+	} else {
+		_ = s.gw.DB.UpdateVMStatus(ctx, vmRecord.ID, "running", nil, nil, nil, nil)
+	}
+
+	s.writeln(" done.")
+	s.writef("  ssh %s to connect.\n", name)
+	return nil
+}
+
+// ── cp ────────────────────────────────────────────────────────────────
+
+func cmdCp(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cp <name> [new-name]")
+	}
+
+	ctx := context.Background()
+	srcName := args[0]
+	dstName := ""
+	if len(args) >= 2 {
+		dstName = strings.ToLower(args[1])
+	}
+
+	srcVM, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, srcName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", srcName)
+		}
+		return fmt.Errorf("lookup: %w", err)
+	}
+
+	if dstName == "" {
+		dstName = randomName()
+	}
+	if !validName.MatchString(dstName) {
+		return fmt.Errorf("invalid name %q: must be 3-30 chars, lowercase letters/numbers/hyphens, start with letter", dstName)
+	}
+
+	// Check new name isn't taken
+	existing, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, dstName)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check existing: %w", err)
+	}
+	if existing != nil && err == nil {
+		return fmt.Errorf("vm %q already exists", dstName)
+	}
+
+	s.writef("  cloning %s -> %s...", srcName, dstName)
+
+	// Create a new DB record with the same specs
+	newVM, err := s.gw.DB.CreateVM(ctx, s.user.ID, dstName, srcVM.Image, srcVM.VCPU, srcVM.MemoryMB, srcVM.DiskGB)
+	if err != nil {
+		s.writef(" failed!\n")
+		return fmt.Errorf("create clone record: %w", err)
+	}
+
+	// Clone disk images if VM manager is available
+	if s.gw.VM != nil {
+		if err := s.gw.VM.CloneDisks(ctx, srcVM.ID, newVM.ID); err != nil {
+			s.writef(" failed!\n")
+			s.gw.DB.DeleteVM(ctx, newVM.ID)
+			return fmt.Errorf("clone disks: %w", err)
+		}
+	}
+
+	_ = s.gw.DB.UpdateVMStatus(ctx, newVM.ID, "stopped", nil, nil, nil, nil)
+
+	// Copy tags from source
+	tags, err := s.gw.DB.TagsByVM(ctx, srcVM.ID)
+	if err == nil {
+		for _, tag := range tags {
+			s.gw.DB.AddTag(ctx, newVM.ID, tag)
+		}
+	}
+
+	s.writeln(" done!")
+	s.writeln("")
+	s.writef("  name:  %s\n", newVM.Name)
+	s.writef("  image: %s\n", newVM.Image)
+	s.writef("  url:   https://%s.%s\n", newVM.Name, s.gw.domain)
+	s.writef("  start it with: start %s\n", newVM.Name)
+	s.writeln("")
+	return nil
+}
+
+// ── rm ────────────────────────────────────────────────────────────────
+
+func cmdRm(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: rm <name>")
+	}
+
+	ctx := context.Background()
+	name := args[0]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", name)
+		}
+		return fmt.Errorf("lookup: %w", err)
+	}
+	if vmRecord == nil {
+		return fmt.Errorf("no vm named %q", name)
+	}
+
+	// Confirm deletion
+	s.writef("  are you sure? type the vm name to confirm: ")
+	confirm, err := s.term.ReadLine()
+	if err != nil {
+		return fmt.Errorf("read confirmation: %w", err)
+	}
+
+	if strings.TrimSpace(confirm) != name {
+		s.writeln("  cancelled.")
+		return nil
+	}
+
+	// Use VM manager for full cleanup (stop + remove disks + DB)
+	s.removeProxyRoute(ctx, name)
+	s.unregisterVMMetadata(ctx, vmRecord.ID)
+
+	if s.gw.VM != nil {
+		if err := s.gw.VM.Destroy(ctx, vmRecord.ID); err != nil {
+			return fmt.Errorf("destroy: %w", err)
+		}
+	} else {
+		if err := s.gw.DB.DeleteVM(ctx, vmRecord.ID); err != nil {
+			return fmt.Errorf("delete: %w", err)
+		}
+	}
+
+	s.writef("  deleted %s.\n", name)
+	return nil
+}
+
+// ── tag ───────────────────────────────────────────────────────────────
+
+func cmdTag(s *Shell, args []string) error {
+	ctx := context.Background()
+	remove := false
+	filteredArgs := args[:0]
+
+	for _, a := range args {
+		if a == "-d" || a == "--delete" {
+			remove = true
+		} else {
+			filteredArgs = append(filteredArgs, a)
+		}
+	}
+
+	if len(filteredArgs) < 2 {
+		return fmt.Errorf("usage: tag [-d] <name> <tag>")
+	}
+
+	name := filteredArgs[0]
+	tag := filteredArgs[1]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", name)
+		}
+		return fmt.Errorf("lookup: %w", err)
+	}
+
+	if remove {
+		if err := s.gw.DB.RemoveTag(ctx, vmRecord.ID, tag); err != nil {
+			return fmt.Errorf("remove tag: %w", err)
+		}
+		s.writef("  removed tag %q from %s\n", tag, name)
+	} else {
+		if err := s.gw.DB.AddTag(ctx, vmRecord.ID, tag); err != nil {
+			return fmt.Errorf("add tag: %w", err)
+		}
+		s.writef("  tagged %s with %q\n", name, tag)
+	}
+
+	return nil
+}
+
+// ── rename ────────────────────────────────────────────────────────────
+
+func cmdRename(s *Shell, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: rename <old> <new>")
+	}
+
+	ctx := context.Background()
+	oldName := args[0]
+	newName := strings.ToLower(args[1])
+
+	if !validName.MatchString(newName) {
+		return fmt.Errorf("invalid name %q: must be 3-30 chars, lowercase letters/numbers/hyphens, start with letter", newName)
+	}
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, oldName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", oldName)
+		}
+		return fmt.Errorf("lookup: %w", err)
+	}
+
+	// Check new name isn't taken
+	existing, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, newName)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check existing: %w", err)
+	}
+	if existing != nil && err == nil {
+		return fmt.Errorf("vm %q already exists", newName)
+	}
+
+	if err := s.gw.DB.RenameVM(ctx, vmRecord.ID, newName); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+
+	// Update proxy route if VM is running
+	if vmRecord.Status == "running" {
+		s.removeProxyRoute(ctx, oldName)
+		s.addProxyRoute(ctx, vmRecord.ID, newName)
+	}
+
+	s.writef("  renamed %s -> %s\n", oldName, newName)
+	s.writef("  new url: https://%s.%s\n", newName, s.gw.domain)
+	return nil
+}
+
+// ── helpers ───────────────────────────────────────────────────────────
+
+func colorStatus(status string) string {
+	switch status {
+	case "running":
+		return "\033[32m" + status + "\033[0m"
+	case "stopped":
+		return "\033[33m" + status + "\033[0m"
+	case "creating":
+		return "\033[36m" + status + "\033[0m"
+	case "error":
+		return "\033[31m" + status + "\033[0m"
+	default:
+		return status
+	}
+}
+
+func relativeTime(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		return fmt.Sprintf("%dm ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		return fmt.Sprintf("%dh ago", h)
+	case d < 30*24*time.Hour:
+		days := int(d.Hours() / 24)
+		return fmt.Sprintf("%dd ago", days)
+	default:
+		return t.Format("Jan 2")
+	}
+}
+
+// Random name generation
+var adjectives = []string{
+	"swift", "bold", "calm", "dark", "eager",
+	"fair", "glad", "keen", "live", "mild",
+	"neat", "pale", "rare", "safe", "vast",
+	"warm", "wise", "cool", "free", "pure",
+}
+
+var nouns = []string{
+	"fox", "owl", "bee", "elk", "jay",
+	"ant", "bat", "cat", "dog", "emu",
+	"gnu", "hen", "ape", "yak", "ram",
+	"cod", "doe", "ewe", "kit", "pup",
+}
+
+func randomName() string {
+	a := adjectives[mathrand.Intn(len(adjectives))]
+	n := nouns[mathrand.Intn(len(nouns))]
+	return fmt.Sprintf("%s-%s", a, n)
+}
+
+// hasFlag checks if a flag is present in args and returns (found, filtered args).
+func hasFlag(args []string, flags ...string) (bool, []string) {
+	found := false
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		isFlag := false
+		for _, f := range flags {
+			if a == f {
+				isFlag = true
+				found = true
+				break
+			}
+		}
+		if !isFlag {
+			filtered = append(filtered, a)
+		}
+	}
+	return found, filtered
+}
+
+// writeJSON encodes v as indented JSON to the shell.
+func (s *Shell) writeJSON(v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	s.writeln(string(data))
+	return nil
+}
+
+// generateLinkToken creates a random URL-safe token for share links.
+func generateLinkToken() (string, error) {
+	b := make([]byte, 18)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// ── ssh-key ──────────────────────────────────────────────────────────
+
+func cmdSSHKey(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return cmdSSHKeyHelp(s)
+	}
+
+	switch args[0] {
+	case "list", "ls":
+		return cmdSSHKeyList(s, args[1:])
+	case "add":
+		return cmdSSHKeyAdd(s, args[1:])
+	case "remove", "rm":
+		return cmdSSHKeyRemove(s, args[1:])
+	case "help":
+		return cmdSSHKeyHelp(s)
+	default:
+		return fmt.Errorf("unknown ssh-key subcommand %q. try: ssh-key help", args[0])
+	}
+}
+
+func cmdSSHKeyHelp(s *Shell) error {
+	s.writeln("")
+	s.writeln("  \033[1mssh-key\033[0m -- manage your SSH keys")
+	s.writeln("")
+	s.writeln("    ssh-key list          list your keys")
+	s.writeln("    ssh-key add           add a new key (paste authorized_keys format)")
+	s.writeln("    ssh-key remove <id>   remove a key by ID")
+	s.writeln("")
+	return nil
+}
+
+func cmdSSHKeyList(s *Shell, args []string) error {
+	ctx := context.Background()
+	jsonOut, _ := hasFlag(args, "--json")
+
+	keys, err := s.gw.DB.SSHKeysByUser(ctx, s.user.ID)
+	if err != nil {
+		return fmt.Errorf("list keys: %w", err)
+	}
+
+	if jsonOut {
+		type keyJSON struct {
+			ID          int64  `json:"id"`
+			Fingerprint string `json:"fingerprint"`
+			Comment     string `json:"comment,omitempty"`
+			CreatedAt   string `json:"created_at"`
+		}
+		out := make([]keyJSON, len(keys))
+		for i, k := range keys {
+			out[i] = keyJSON{
+				ID:          k.ID,
+				Fingerprint: k.Fingerprint,
+				Comment:     k.Comment,
+				CreatedAt:   k.CreatedAt.Format(time.RFC3339),
+			}
+		}
+		return s.writeJSON(out)
+	}
+
+	if len(keys) == 0 {
+		s.writeln("  no ssh keys found.")
+		return nil
+	}
+
+	s.writeln("")
+	s.writef("  %-4s  %-48s  %-12s  %s\n", "ID", "FINGERPRINT", "COMMENT", "ADDED")
+	s.writef("  %-4s  %-48s  %-12s  %s\n", "──", "───────────", "───────", "─────")
+	for _, k := range keys {
+		s.writef("  %-4d  %-48s  %-12s  %s\n",
+			k.ID, k.Fingerprint, k.Comment, relativeTime(k.CreatedAt.Time))
+	}
+	s.writeln("")
+	return nil
+}
+
+func cmdSSHKeyAdd(s *Shell, args []string) error {
+	ctx := context.Background()
+
+	s.writeln("  paste your public key (authorized_keys format):")
+	s.writeln("  (e.g. ssh-ed25519 AAAA... comment)")
+	s.writeln("")
+
+	line, err := s.term.ReadLine()
+	if err != nil {
+		return fmt.Errorf("read key: %w", err)
+	}
+
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return fmt.Errorf("no key provided")
+	}
+
+	// Parse the key to validate and get fingerprint
+	pubKey, comment, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
+	if err != nil {
+		return fmt.Errorf("invalid key format: %w", err)
+	}
+
+	fingerprint := gossh.FingerprintSHA256(pubKey)
+
+	// Check it's not a duplicate
+	existingKeys, err := s.gw.DB.SSHKeysByUser(ctx, s.user.ID)
+	if err != nil {
+		return fmt.Errorf("check existing: %w", err)
+	}
+	for _, k := range existingKeys {
+		if k.Fingerprint == fingerprint {
+			return fmt.Errorf("key already registered (fingerprint: %s)", fingerprint)
+		}
+	}
+
+	key, err := s.gw.DB.AddSSHKey(ctx, s.user.ID, line, fingerprint, comment)
+	if err != nil {
+		return fmt.Errorf("add key: %w", err)
+	}
+
+	s.writeln("")
+	s.writef("  key added (id=%d, fingerprint=%s)\n", key.ID, key.Fingerprint)
+	s.writeln("  you can now authenticate with this key.")
+	s.writeln("")
+	return nil
+}
+
+func cmdSSHKeyRemove(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: ssh-key remove <id>")
+	}
+
+	ctx := context.Background()
+
+	var keyID int64
+	if _, err := fmt.Sscanf(args[0], "%d", &keyID); err != nil {
+		return fmt.Errorf("invalid key ID %q", args[0])
+	}
+
+	keys, err := s.gw.DB.SSHKeysByUser(ctx, s.user.ID)
+	if err != nil {
+		return fmt.Errorf("list keys: %w", err)
+	}
+
+	found := false
+	for _, k := range keys {
+		if k.ID == keyID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("key %d not found", keyID)
+	}
+
+	count, err := s.gw.DB.SSHKeyCountByUser(ctx, s.user.ID)
+	if err != nil {
+		return fmt.Errorf("count keys: %w", err)
+	}
+	if count <= 1 {
+		return fmt.Errorf("can't remove your last SSH key (you'd be locked out)")
+	}
+
+	if err := s.gw.DB.DeleteSSHKey(ctx, keyID); err != nil {
+		return fmt.Errorf("delete key: %w", err)
+	}
+
+	s.writef("  removed key %d.\n", keyID)
+	return nil
+}
+
+// ── share ────────────────────────────────────────────────────────────
+
+func cmdShare(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return cmdShareHelp(s)
+	}
+
+	switch args[0] {
+	case "add":
+		return cmdShareAdd(s, args[1:])
+	case "remove", "rm":
+		return cmdShareRemove(s, args[1:])
+	case "add-link":
+		return cmdShareAddLink(s, args[1:])
+	case "set-public":
+		return cmdShareSetPublic(s, args[1:], true)
+	case "set-private":
+		return cmdShareSetPublic(s, args[1:], false)
+	case "list", "ls":
+		return cmdShareList(s, args[1:])
+	case "help":
+		return cmdShareHelp(s)
+	default:
+		return fmt.Errorf("unknown share subcommand %q. try: share help", args[0])
+	}
+}
+
+func cmdShareHelp(s *Shell) error {
+	s.writeln("")
+	s.writeln("  \033[1mshare\033[0m -- share access to your environments")
+	s.writeln("")
+	s.writeln("    share add <vm> <handle>      share with a user by handle")
+	s.writeln("    share remove <vm> <handle>   revoke a user's access")
+	s.writeln("    share add-link <vm>          create a shareable link")
+	s.writeln("    share set-public <vm>        make HTTPS endpoint public")
+	s.writeln("    share set-private <vm>       make HTTPS endpoint private")
+	s.writeln("    share list <vm>              list shares for a VM")
+	s.writeln("")
+	return nil
+}
+
+func cmdShareAdd(s *Shell, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: share add <vm> <handle>")
+	}
+
+	ctx := context.Background()
+	vmName := args[0]
+	targetHandle := args[1]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, vmName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", vmName)
+		}
+		return fmt.Errorf("lookup vm: %w", err)
+	}
+
+	targetUser, err := s.gw.DB.UserByHandle(ctx, targetHandle)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no user named %q", targetHandle)
+		}
+		return fmt.Errorf("lookup user: %w", err)
+	}
+
+	if targetUser.ID == s.user.ID {
+		return fmt.Errorf("you already own this VM")
+	}
+
+	if err := s.gw.DB.ShareVMWithUser(ctx, vmRecord.ID, targetUser.ID); err != nil {
+		return fmt.Errorf("share: %w", err)
+	}
+
+	s.writef("  shared %s with %s\n", vmName, targetHandle)
+	return nil
+}
+
+func cmdShareRemove(s *Shell, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: share remove <vm> <handle>")
+	}
+
+	ctx := context.Background()
+	vmName := args[0]
+	targetHandle := args[1]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, vmName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", vmName)
+		}
+		return fmt.Errorf("lookup vm: %w", err)
+	}
+
+	targetUser, err := s.gw.DB.UserByHandle(ctx, targetHandle)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no user named %q", targetHandle)
+		}
+		return fmt.Errorf("lookup user: %w", err)
+	}
+
+	if err := s.gw.DB.RemoveShareByVMAndUser(ctx, vmRecord.ID, targetUser.ID); err != nil {
+		return fmt.Errorf("remove share: %w", err)
+	}
+
+	s.writef("  removed %s's access to %s\n", targetHandle, vmName)
+	return nil
+}
+
+func cmdShareAddLink(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: share add-link <vm>")
+	}
+
+	ctx := context.Background()
+	vmName := args[0]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, vmName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", vmName)
+		}
+		return fmt.Errorf("lookup vm: %w", err)
+	}
+
+	token, err := generateLinkToken()
+	if err != nil {
+		return fmt.Errorf("generate token: %w", err)
+	}
+
+	_, err = s.gw.DB.ShareVMWithLink(ctx, vmRecord.ID, token)
+	if err != nil {
+		return fmt.Errorf("create link share: %w", err)
+	}
+
+	s.writeln("")
+	s.writef("  https://%s/share/%s\n", s.gw.domain, token)
+	s.writeln("")
+	s.writeln("  anyone with this link can access the HTTPS endpoint.")
+	s.writeln("")
+	return nil
+}
+
+func cmdShareSetPublic(s *Shell, args []string, public bool) error {
+	if len(args) == 0 {
+		if public {
+			return fmt.Errorf("usage: share set-public <vm>")
+		}
+		return fmt.Errorf("usage: share set-private <vm>")
+	}
+
+	ctx := context.Background()
+	vmName := args[0]
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, vmName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", vmName)
+		}
+		return fmt.Errorf("lookup vm: %w", err)
+	}
+
+	if err := s.gw.DB.SetVMPublic(ctx, vmRecord.ID, public); err != nil {
+		return fmt.Errorf("set public: %w", err)
+	}
+
+	if public {
+		s.writef("  %s is now public at https://%s.%s/\n", vmName, vmName, s.gw.domain)
+	} else {
+		s.writef("  %s is now private.\n", vmName)
+	}
+	return nil
+}
+
+func cmdShareList(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: share list <vm>")
+	}
+
+	ctx := context.Background()
+	vmName := args[0]
+	jsonOut, _ := hasFlag(args[1:], "--json")
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, vmName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", vmName)
+		}
+		return fmt.Errorf("lookup vm: %w", err)
+	}
+
+	shares, err := s.gw.DB.SharesByVM(ctx, vmRecord.ID)
+	if err != nil {
+		return fmt.Errorf("list shares: %w", err)
+	}
+
+	isPublic, _ := s.gw.DB.IsVMPublic(ctx, vmRecord.ID)
+
+	if jsonOut {
+		type shareJSON struct {
+			ID        int64  `json:"id"`
+			Type      string `json:"type"`
+			Target    string `json:"target,omitempty"`
+			Link      string `json:"link,omitempty"`
+			CreatedAt string `json:"created_at"`
+		}
+		out := struct {
+			VM       string      `json:"vm"`
+			IsPublic bool        `json:"is_public"`
+			Shares   []shareJSON `json:"shares"`
+		}{
+			VM:       vmName,
+			IsPublic: isPublic,
+			Shares:   make([]shareJSON, 0),
+		}
+		for _, sh := range shares {
+			sj := shareJSON{
+				ID:        sh.ID,
+				CreatedAt: sh.CreatedAt.Format(time.RFC3339),
+			}
+			if sh.SharedWith.Valid {
+				sj.Type = "user"
+				if u, err := s.gw.DB.UserByID(ctx, sh.SharedWith.Int64); err == nil {
+					sj.Target = u.Handle
+				}
+			} else if sh.LinkToken.Valid {
+				sj.Type = "link"
+				sj.Link = fmt.Sprintf("https://%s/share/%s", s.gw.domain, sh.LinkToken.String)
+			} else if sh.IsPublic {
+				sj.Type = "public"
+			}
+			out.Shares = append(out.Shares, sj)
+		}
+		return s.writeJSON(out)
+	}
+
+	s.writeln("")
+	if isPublic {
+		s.writef("  %s is \033[32mpublic\033[0m\n", vmName)
+	} else {
+		s.writef("  %s is \033[33mprivate\033[0m\n", vmName)
+	}
+
+	if len(shares) == 0 {
+		s.writeln("  no shares.")
+	} else {
+		s.writeln("")
+		for _, sh := range shares {
+			if sh.SharedWith.Valid {
+				if u, err := s.gw.DB.UserByID(ctx, sh.SharedWith.Int64); err == nil {
+					s.writef("  [user]  %s  (since %s)\n", u.Handle, relativeTime(sh.CreatedAt.Time))
+				}
+			} else if sh.LinkToken.Valid {
+				s.writef("  [link]  https://%s/share/%s  (since %s)\n",
+					s.gw.domain, sh.LinkToken.String, relativeTime(sh.CreatedAt.Time))
+			}
+		}
+	}
+	s.writeln("")
+	return nil
+}

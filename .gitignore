@@ -1,0 +1,59 @@
+# Compiled binaries
+/exedevussy
+/ussycode
+/ssh.test
+*.test
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test/coverage
+*.out
+coverage.html
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# VM / Firecracker artifacts
+*.ext4
+*.rootfs
+vmlinux
+*.sock
+firecracker.log
+
+# ZFS snapshots / local testing
+/tmp/
+/data/
+
+# Terraform state
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.backup
+deploy/terraform/.terraform/
+
+# Ansible
+deploy/ansible/*.retry
+
+# Secrets
+*.pem
+*.key
+!deploy/ansible/roles/*/files/*.key.example
+credentials.json

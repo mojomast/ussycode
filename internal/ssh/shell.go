@@ -1,0 +1,224 @@
+package ssh
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"strings"
+
+	gssh "github.com/gliderlabs/ssh"
+	"github.com/mojomast/exedevussy/internal/db"
+	"github.com/mojomast/exedevussy/internal/gateway"
+	"golang.org/x/term"
+)
+
+// Shell is the custom interactive shell presented to authenticated users.
+type Shell struct {
+	gw      *Gateway
+	session gssh.Session
+	user    *db.User
+	term    *term.Terminal
+}
+
+// Run starts the interactive shell REPL.
+func (s *Shell) Run() error {
+	s.term = term.NewTerminal(s.session, "\033[35mussy>\033[0m ")
+
+	// Print welcome message
+	s.printWelcome()
+
+	// REPL loop
+	for {
+		line, err := s.term.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				// Ctrl+D
+				s.writeln("\ngoodbye.")
+				return nil
+			}
+			return fmt.Errorf("read line: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		cmd := parts[0]
+		args := parts[1:]
+
+		if cmd == "exit" || cmd == "quit" {
+			s.writeln("goodbye.")
+			return nil
+		}
+
+		handler, ok := commands[cmd]
+		if !ok {
+			s.writef("unknown command: %s. type 'help' for commands.\n", cmd)
+			continue
+		}
+
+		if err := handler(s, args); err != nil {
+			s.writef("error: %v\n", err)
+		}
+	}
+}
+
+// execCommand handles non-interactive (single-command) SSH sessions.
+// e.g. `ssh ussy.host ls` or `ssh ussy.host new --name=foo`
+func (s *Shell) execCommand(cmd []string) {
+	if len(cmd) == 0 {
+		return
+	}
+
+	name := cmd[0]
+	args := cmd[1:]
+
+	handler, ok := commands[name]
+	if !ok {
+		fmt.Fprintf(s.session, "unknown command: %s\n", name)
+		return
+	}
+
+	// For non-interactive commands, write directly to session
+	// (no terminal wrapping needed)
+	s.term = term.NewTerminal(s.session, "")
+
+	if err := handler(s, args); err != nil {
+		fmt.Fprintf(s.session, "error: %v\n", err)
+	}
+}
+
+func (s *Shell) printWelcome() {
+	running, _ := s.gw.DB.RunningVMCountByUser(context.Background(), s.user.ID)
+	total, _ := s.gw.DB.VMCountByUser(context.Background(), s.user.ID)
+
+	s.writeln("")
+	s.writef("  welcome back, %s.\n", s.user.Handle)
+
+	switch {
+	case running > 0:
+		s.writef("  you have %d vm%s running (%d total). type 'ls' to see them.\n",
+			running, plural(running), total)
+	case total > 0:
+		s.writef("  you have %d vm%s. type 'ls' to see them.\n", total, plural(total))
+	default:
+		s.writeln("  you have no vms yet. type 'new' to create one.")
+	}
+
+	s.writeln("  type 'help' for commands.")
+	s.writeln("")
+}
+
+func (s *Shell) writeln(msg string) {
+	if s.term != nil {
+		fmt.Fprintln(s.term, msg)
+	}
+}
+
+func (s *Shell) writef(format string, args ...interface{}) {
+	if s.term != nil {
+		fmt.Fprintf(s.term, format, args...)
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// registerVMMetadata registers a VM with the metadata service so it can
+// query its own metadata at 169.254.169.254.
+func (s *Shell) registerVMMetadata(ctx context.Context, vmID int64, vmName, image string) {
+	if s.gw.Metadata == nil {
+		return
+	}
+
+	// Re-read the VM to get the assigned IP
+	vmRecord, err := s.gw.DB.VMsByUser(ctx, s.user.ID)
+	if err != nil {
+		return
+	}
+
+	// Fetch the user's SSH public keys for injection into the VM
+	var sshKeys []string
+	keys, err := s.gw.DB.SSHKeysByUser(ctx, s.user.ID)
+	if err == nil {
+		for _, k := range keys {
+			sshKeys = append(sshKeys, k.PublicKey)
+		}
+	}
+
+	for _, v := range vmRecord {
+		if v.ID == vmID && v.IPAddress.Valid {
+			s.gw.Metadata.RegisterVM(v.IPAddress.String, &gateway.VMMetadata{
+				InstanceID: fmt.Sprintf("vm-%d", vmID),
+				LocalIPv4:  v.IPAddress.String,
+				Hostname:   vmName,
+				UserID:     s.user.ID,
+				UserHandle: s.user.Handle,
+				VMName:     vmName,
+				Image:      image,
+				SSHKeys:    sshKeys,
+			})
+			return
+		}
+	}
+}
+
+// unregisterVMMetadata removes a VM from the metadata service.
+func (s *Shell) unregisterVMMetadata(ctx context.Context, vmID int64) {
+	if s.gw.Metadata == nil {
+		return
+	}
+
+	// Read VM to get IP before it's cleared
+	vmRecord, err := s.gw.DB.VMsByUser(ctx, s.user.ID)
+	if err != nil {
+		return
+	}
+
+	for _, v := range vmRecord {
+		if v.ID == vmID && v.IPAddress.Valid {
+			s.gw.Metadata.UnregisterVM(v.IPAddress.String)
+			return
+		}
+	}
+}
+
+// addProxyRoute registers a Caddy reverse proxy route for a running VM.
+func (s *Shell) addProxyRoute(ctx context.Context, vmID int64, vmName string) {
+	if s.gw.Proxy == nil {
+		return
+	}
+
+	// Find the VM's IP
+	vmRecord, err := s.gw.DB.VMsByUser(ctx, s.user.ID)
+	if err != nil {
+		return
+	}
+
+	for _, v := range vmRecord {
+		if v.ID == vmID && v.IPAddress.Valid {
+			if err := s.gw.Proxy.AddRoute(ctx, vmName, v.IPAddress.String, 8080); err != nil {
+				s.gw.Proxy.Logger().Warn("failed to add proxy route",
+					"vm", vmName, "error", err)
+			}
+			return
+		}
+	}
+}
+
+// removeProxyRoute removes the Caddy reverse proxy route for a VM.
+func (s *Shell) removeProxyRoute(ctx context.Context, vmName string) {
+	if s.gw.Proxy == nil {
+		return
+	}
+	if err := s.gw.Proxy.RemoveRoute(ctx, vmName); err != nil {
+		s.gw.Proxy.Logger().Warn("failed to remove proxy route",
+			"vm", vmName, "error", err)
+	}
+}

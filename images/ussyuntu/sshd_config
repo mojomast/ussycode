@@ -1,0 +1,41 @@
+# exedevussy SSH server configuration for microVMs
+# Optimized for Firecracker environments
+
+Port 22
+AddressFamily inet
+ListenAddress 0.0.0.0
+
+# Authentication
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitRootLogin no
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+
+# Allow the host to inject authorized keys via the metadata service
+# The init script writes keys from the metadata service to authorized_keys
+AuthorizedKeysFile .ssh/authorized_keys
+
+# Performance
+UseDNS no
+GSSAPIAuthentication no
+
+# Security
+X11Forwarding no
+AllowTcpForwarding yes
+AllowAgentForwarding yes
+PermitTunnel no
+
+# Keep alive
+ClientAliveInterval 30
+ClientAliveCountMax 3
+
+# Banner
+PrintMotd yes
+PrintLastLog no
+
+# Subsystem
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+# Allow the exedev user
+AllowUsers exedev

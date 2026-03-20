@@ -1,0 +1,21 @@
+# exedev user profile
+# Loaded on login to the dev environment
+
+# Source environment from metadata service
+if [ -f ~/.exedev-env ]; then
+    set -a
+    source ~/.exedev-env
+    set +a
+fi
+
+# Go path
+export GOPATH="$HOME/go"
+export PATH="$GOPATH/bin:/usr/local/go/bin:$PATH"
+
+# Default to projects directory
+if [ -d ~/projects ]; then
+    cd ~/projects
+fi
+
+# Prompt with hostname (VM name)
+PS1='\[\033[35m\]\h\[\033[0m\]:\[\033[34m\]\w\[\033[0m\]\$ '

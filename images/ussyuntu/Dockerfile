@@ -1,0 +1,132 @@
+# ussyuntu -- base VM image for exedevussy
+# Ubuntu-based dev environment with pre-installed tools.
+# Built as an OCI container, then extracted to an ext4 rootfs
+# for Firecracker microVMs.
+#
+# Build: docker build -t ussyuntu:latest images/ussyuntu/
+# Push:  docker push ghcr.io/mojomast/ussyuntu:latest
+
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Core system packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Init + services
+    systemd systemd-sysv dbus \
+    # SSH server
+    openssh-server \
+    # Networking
+    iproute2 iputils-ping dnsutils curl wget ca-certificates \
+    # Core CLI tools
+    git jq tmux vim nano htop tree less file unzip zip \
+    # Build essentials
+    build-essential pkg-config \
+    # Python
+    python3 python3-pip python3-venv \
+    # Node.js (via nodesource in next step)
+    # SQLite
+    sqlite3 libsqlite3-dev \
+    # Misc
+    sudo locales man-db \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set locale
+RUN locale-gen en_US.UTF-8
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+# Install Node.js 22 LTS
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go (latest stable)
+ARG GO_VERSION=1.24.4
+RUN curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz | tar -C /usr/local -xzf -
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Install GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# ──────────────────────────────────────────────────────────────────────
+# Create the default user: "exedev" with passwordless sudo
+# ──────────────────────────────────────────────────────────────────────
+
+RUN useradd -m -s /bin/bash -G sudo exedev \
+    && echo "exedev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/exedev \
+    && chmod 0440 /etc/sudoers.d/exedev
+
+# Setup exedev user's environment
+RUN mkdir -p /home/exedev/.ssh /home/exedev/projects \
+    && chown -R exedev:exedev /home/exedev
+
+# Go environment for exedev user
+RUN echo 'export GOPATH=/home/exedev/go' >> /home/exedev/.bashrc \
+    && echo 'export PATH=$GOPATH/bin:/usr/local/go/bin:$PATH' >> /home/exedev/.bashrc \
+    && mkdir -p /home/exedev/go/bin \
+    && chown -R exedev:exedev /home/exedev/go
+
+# ──────────────────────────────────────────────────────────────────────
+# SSH server configuration
+# ──────────────────────────────────────────────────────────────────────
+
+RUN mkdir -p /run/sshd \
+    && ssh-keygen -A
+
+# SSH config: no password auth, allow pubkey, allow root login for host management
+COPY sshd_config /etc/ssh/sshd_config
+
+# ──────────────────────────────────────────────────────────────────────
+# Systemd setup for Firecracker boot
+# ──────────────────────────────────────────────────────────────────────
+
+# Mask services that don't work / aren't needed in a microVM
+RUN systemctl mask \
+    systemd-resolved.service \
+    systemd-timesyncd.service \
+    systemd-networkd-wait-online.service \
+    multipathd.service \
+    ModemManager.service \
+    networkd-dispatcher.service \
+    systemd-udevd.service
+
+# Enable SSH
+RUN systemctl enable ssh.service
+
+# Custom init script that mounts data disk and sets up networking
+COPY init-exedev.sh /usr/local/bin/init-exedev.sh
+RUN chmod +x /usr/local/bin/init-exedev.sh
+
+# Systemd service for our init script
+COPY exedev-init.service /etc/systemd/system/exedev-init.service
+RUN systemctl enable exedev-init.service
+
+# ──────────────────────────────────────────────────────────────────────
+# Welcome message
+# ──────────────────────────────────────────────────────────────────────
+
+COPY motd /etc/motd
+
+# Default bash profile for exedev
+COPY bash_profile /home/exedev/.bash_profile
+RUN chown exedev:exedev /home/exedev/.bash_profile
+
+# ──────────────────────────────────────────────────────────────────────
+# Data disk mount point
+# ──────────────────────────────────────────────────────────────────────
+
+RUN mkdir -p /data && chown exedev:exedev /data
+
+# ──────────────────────────────────────────────────────────────────────
+# Cleanup
+# ──────────────────────────────────────────────────────────────────────
+
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Firecracker boots with /sbin/init (systemd)
+CMD ["/sbin/init"]

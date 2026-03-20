@@ -250,6 +250,111 @@ func (m *Manager) EnsureBaseConfig(ctx context.Context, email string) error {
 	return nil
 }
 
+// AddCustomDomain registers a reverse proxy route for a custom domain pointing
+// to a VM's existing upstream. The VM must already have a route registered.
+func (m *Manager) AddCustomDomain(ctx context.Context, domain, vmName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	vmIP, ok := m.routes[vmName]
+	if !ok {
+		return fmt.Errorf("no active route for VM %q", vmName)
+	}
+
+	upstream := fmt.Sprintf("%s:8080", vmIP)
+
+	m.logger.Info("adding custom domain route", "domain", domain, "upstream", upstream)
+
+	route := caddyRoute{
+		ID: customDomainRouteID(domain),
+		Match: []caddyMatch{
+			{Host: []string{domain}},
+		},
+		Handle: []caddyHandler{
+			{
+				Handler: "subroute",
+				Routes: []caddySubroute{
+					{
+						Handle: []caddyHandler{
+							{
+								Handler: "headers",
+								Request: &caddyHeaderOps{
+									Set: map[string][]string{
+										"X-Forwarded-Proto": {"https"},
+										"X-Forwarded-Host":  {domain},
+									},
+								},
+							},
+							{
+								Handler: "reverse_proxy",
+								Upstreams: []caddyUpstream{
+									{Dial: upstream},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(route)
+	if err != nil {
+		return fmt.Errorf("marshal route: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/config/apps/http/servers/srv0/routes", m.adminAPI)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("caddy API request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("caddy API error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	m.logger.Info("custom domain route added", "domain", domain, "upstream", upstream)
+	return nil
+}
+
+// RemoveCustomDomain removes the reverse proxy route for a custom domain.
+func (m *Manager) RemoveCustomDomain(ctx context.Context, domain string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	id := customDomainRouteID(domain)
+
+	m.logger.Info("removing custom domain route", "domain", domain)
+
+	url := fmt.Sprintf("%s/id/%s", m.adminAPI, id)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("caddy API request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		m.logger.Warn("custom domain route removal failed (may not exist)",
+			"domain", domain, "status", resp.StatusCode, "body", string(respBody))
+	}
+
+	return nil
+}
+
 // ListRoutes returns the currently tracked VM routes.
 func (m *Manager) ListRoutes() map[string]string {
 	m.mu.Lock()
@@ -284,7 +389,11 @@ func (m *Manager) Logger() *slog.Logger {
 // --- helper: route ID ---
 
 func routeID(vmName string) string {
-	return "exedev-vm-" + vmName
+	return "ussycode-vm-" + vmName
+}
+
+func customDomainRouteID(domain string) string {
+	return "ussycode-cname-" + domain
 }
 
 // --- Caddy JSON API types ---

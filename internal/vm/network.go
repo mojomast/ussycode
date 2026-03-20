@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -10,8 +11,16 @@ import (
 	"sync"
 )
 
+// NetworkBackend is the interface contract for VM network management.
+// Implementations handle TAP device creation, IP allocation, and NAT rules.
+type NetworkBackend interface {
+	SetupBridge() error
+	AllocateNetwork(vmID string) (*NetworkConfig, error)
+	ReleaseNetwork(vmID, tapDevice string) error
+}
+
 // NetworkManager handles TAP device creation, IP address allocation,
-// and iptables NAT rules for microVM networking.
+// and nftables NAT rules for microVM networking.
 type NetworkManager struct {
 	bridge    string // bridge interface name (e.g., "ussy0")
 	subnet    *net.IPNet
@@ -20,6 +29,7 @@ type NetworkManager struct {
 	nextIP    uint32
 	mu        sync.Mutex
 	logger    *slog.Logger
+	firewall  FirewallManager // nftables-based firewall manager
 }
 
 // NetworkConfig holds the network configuration assigned to a VM.
@@ -32,6 +42,7 @@ type NetworkConfig struct {
 }
 
 // NewNetworkManager creates a new network manager for the given bridge and subnet.
+// If firewall is nil, a default NftablesManager is used.
 func NewNetworkManager(bridge, subnetCIDR string, logger *slog.Logger) (*NetworkManager, error) {
 	_, subnet, err := net.ParseCIDR(subnetCIDR)
 	if err != nil {
@@ -53,6 +64,7 @@ func NewNetworkManager(bridge, subnetCIDR string, logger *slog.Logger) (*Network
 		allocated: make(map[string]string),
 		nextIP:    startIP,
 		logger:    logger,
+		firewall:  NewNftablesManager(nil, logger.With("component", "nftables")),
 	}, nil
 }
 
@@ -83,16 +95,13 @@ func (nm *NetworkManager) SetupBridge() error {
 		return fmt.Errorf("enable ip forwarding: %w", err)
 	}
 
-	// Setup NAT (masquerade) for VM traffic
-	// This is idempotent thanks to -C check
+	// Setup NAT via nftables (replaces legacy iptables masquerade)
 	ones, _ = nm.subnet.Mask.Size()
 	subnetStr := fmt.Sprintf("%s/%d", nm.subnet.IP.String(), ones)
 
-	// Check if rule exists, add if not
-	if err := runCmd("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", subnetStr, "-j", "MASQUERADE"); err != nil {
-		if err := runCmd("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", subnetStr, "-j", "MASQUERADE"); err != nil {
-			return fmt.Errorf("setup NAT: %w", err)
-		}
+	ctx := context.Background()
+	if err := nm.firewall.SetupNAT(ctx, nm.bridge, subnetStr); err != nil {
+		return fmt.Errorf("setup nftables NAT: %w", err)
 	}
 
 	return nil

@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mojomast/exedevussy/internal/db"
+	"github.com/mojomast/ussycode/internal/db"
 	gossh "golang.org/x/crypto/ssh"
 )
 
 // setupTestDB creates a temp database for testing.
 func setupTestDB(t *testing.T) *db.DB {
 	t.Helper()
-	f, err := os.CreateTemp("", "exedevussy-ssh-test-*.db")
+	f, err := os.CreateTemp("", "ussycode-ssh-test-*.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestRegistrationPersistence(t *testing.T) {
 	database := setupTestDB(t)
 
 	// Create a temp host key
-	hostKeyFile, err := os.CreateTemp("", "exedevussy-hostkey-*")
+	hostKeyFile, err := os.CreateTemp("", "ussycode-hostkey-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ doneReading2:
 	reconnectOutput := output2.String()
 	t.Logf("reconnect output:\n%s", reconnectOutput)
 
-	if strings.Contains(reconnectOutput, "ussyverse") || strings.Contains(reconnectOutput, "new here") {
+	if strings.Contains(reconnectOutput, "welcome to the ussyverse") || strings.Contains(reconnectOutput, "new here") {
 		t.Error("BUG: User shown registration flow on reconnect — user was not persisted!")
 	}
 

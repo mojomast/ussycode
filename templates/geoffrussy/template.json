@@ -1,0 +1,9 @@
+{
+  "name": "geoffrussy",
+  "description": "AI dev orchestrator (Go) - Geoffrussy agent pre-configured",
+  "ports": [8080],
+  "post_create": "#!/bin/bash\nset -e\ngit clone https://github.com/mojomast/geoffrussy /home/ussycode/geoffrussy\ncd /home/ussycode/geoffrussy\ngo mod download\necho 'Geoffrussy ready. Run: cd geoffrussy && go run .'",
+  "env": {
+    "GEOFFRUSSY_HOME": "/home/ussycode/geoffrussy"
+  }
+}

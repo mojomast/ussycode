@@ -1,0 +1,29 @@
+---
+# roles/common/defaults/main.yml — Default variables for common role
+ussycode_system_user: ussycode
+ussycode_system_group: ussycode
+ussycode_hostname: "{{ inventory_hostname }}"
+
+common_packages:
+  - curl
+  - wget
+  - jq
+  - git
+  - build-essential
+  - linux-headers-generic
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - unzip
+  - htop
+  - tmux
+  - rsync
+  - net-tools
+
+ufw_allowed_ports:
+  - { port: 22, proto: tcp, comment: "SSH" }
+  - { port: 80, proto: tcp, comment: "HTTP" }
+  - { port: 443, proto: tcp, comment: "HTTPS" }
+  - { port: 2222, proto: tcp, comment: "ussycode SSH gateway" }
+  - { port: 51820, proto: udp, comment: "WireGuard mesh" }

@@ -1,4 +1,4 @@
-// Package ssh implements the exedevussy SSH gateway server.
+// Package ssh implements the ussycode SSH gateway server.
 // Users SSH into this server and interact with a custom shell,
 // not a system shell. The gateway identifies users by their SSH
 // public key fingerprint and routes them to registration or
@@ -17,10 +17,10 @@ import (
 	"os"
 
 	gssh "github.com/gliderlabs/ssh"
-	"github.com/mojomast/exedevussy/internal/db"
-	"github.com/mojomast/exedevussy/internal/gateway"
-	"github.com/mojomast/exedevussy/internal/proxy"
-	"github.com/mojomast/exedevussy/internal/vm"
+	"github.com/mojomast/ussycode/internal/db"
+	"github.com/mojomast/ussycode/internal/gateway"
+	"github.com/mojomast/ussycode/internal/proxy"
+	"github.com/mojomast/ussycode/internal/vm"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -39,6 +39,7 @@ type Gateway struct {
 	VM          *vm.Manager
 	Metadata    *gateway.Server
 	Proxy       *proxy.Manager
+	LLMGateway  gateway.LLMGateway
 	server      *gssh.Server
 	hostKeyPath string
 	domain      string

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mojomast/exedevussy/internal/db"
+	"github.com/mojomast/ussycode/internal/db"
 )
 
 // AuthProxy wraps the Caddy proxy manager to inject authentication

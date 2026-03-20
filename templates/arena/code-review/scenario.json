@@ -1,0 +1,6 @@
+{
+  "name": "code-review",
+  "description": "Find the most bugs in the codebase",
+  "duration_minutes": 45,
+  "max_agents": 4
+}

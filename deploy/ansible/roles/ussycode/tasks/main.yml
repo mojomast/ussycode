@@ -1,0 +1,186 @@
+---
+# roles/ussycode/tasks/main.yml — Install and configure the ussycode platform
+#
+# Downloads (or builds from source) the ussycode binary, creates the config
+# and data directories, templates the environment file and systemd service,
+# and starts the service.
+
+- name: Create ussycode config directory
+  ansible.builtin.file:
+    path: "{{ ussycode_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [ussycode, config]
+
+- name: Create ussycode data directory
+  ansible.builtin.file:
+    path: "{{ ussycode_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [ussycode, config]
+
+- name: Create ussycode subdirectories
+  ansible.builtin.file:
+    path: "{{ ussycode_data_dir }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - images
+    - vms
+    - keys
+  tags: [ussycode, config]
+
+# --- Build from source path ---
+
+- name: Install Go (for building from source)
+  when: ussycode_build_from_source
+  block:
+    - name: Check if Go is installed
+      ansible.builtin.command: /usr/local/go/bin/go version
+      register: go_check
+      failed_when: false
+      changed_when: false
+
+    - name: Download Go
+      ansible.builtin.get_url:
+        url: "https://go.dev/dl/go{{ ussycode_go_version }}.linux-{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}.tar.gz"
+        dest: /tmp/go.tar.gz
+        mode: "0644"
+      when: go_check.rc != 0
+
+    - name: Install Go
+      ansible.builtin.unarchive:
+        src: /tmp/go.tar.gz
+        dest: /usr/local/
+        remote_src: yes
+      when: go_check.rc != 0
+
+    - name: Add Go to PATH
+      ansible.builtin.copy:
+        dest: /etc/profile.d/go.sh
+        content: |
+          export PATH=$PATH:/usr/local/go/bin
+          export GOPATH=/root/go
+          export PATH=$PATH:$GOPATH/bin
+        mode: "0644"
+      when: go_check.rc != 0
+  tags: [ussycode, build]
+
+- name: Clone and build ussycode from source
+  when: ussycode_build_from_source
+  block:
+    - name: Clone ussycode repository
+      ansible.builtin.git:
+        repo: "{{ ussycode_repo }}"
+        dest: /opt/ussycode-src
+        version: main
+        force: yes
+
+    - name: Build ussycode binary
+      ansible.builtin.command: /usr/local/go/bin/go build -o /usr/local/bin/ussycode ./cmd/ussycode/
+      args:
+        chdir: /opt/ussycode-src
+      environment:
+        GOPATH: /root/go
+        PATH: "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  tags: [ussycode, build]
+
+# --- Download binary path ---
+
+- name: Download pre-built ussycode binary
+  when:
+    - not ussycode_build_from_source
+    - ussycode_binary_url != ""
+  block:
+    - name: Download ussycode binary
+      ansible.builtin.get_url:
+        url: "{{ ussycode_binary_url }}"
+        dest: /usr/local/bin/ussycode
+        mode: "0755"
+  tags: [ussycode, install]
+
+- name: Check ussycode binary exists
+  ansible.builtin.stat:
+    path: /usr/local/bin/ussycode
+  register: ussycode_binary
+  tags: [ussycode, install]
+
+- name: Warn if ussycode binary not found
+  ansible.builtin.debug:
+    msg: >
+      WARNING: ussycode binary not found at /usr/local/bin/ussycode.
+      Either set ussycode_build_from_source=true or provide ussycode_binary_url.
+      You can also manually copy the binary to the server.
+  when: not ussycode_binary.stat.exists
+  tags: [ussycode, install]
+
+# --- Configuration ---
+
+- name: Template ussycode environment config
+  ansible.builtin.template:
+    src: ussycode.env.j2
+    dest: "{{ ussycode_config_dir }}/ussycode.env"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: restart ussycode
+  tags: [ussycode, config]
+
+- name: Generate SSH host key if not present
+  ansible.builtin.command: >
+    ssh-keygen -t ed25519 -f {{ ussycode_data_dir }}/ssh_host_ed25519_key -N ""
+  args:
+    creates: "{{ ussycode_data_dir }}/ssh_host_ed25519_key"
+  tags: [ussycode, config]
+
+# --- Systemd service ---
+
+- name: Template ussycode systemd service
+  ansible.builtin.template:
+    src: ussycode.service.j2
+    dest: /etc/systemd/system/ussycode.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - daemon reload
+    - restart ussycode
+  tags: [ussycode, service]
+
+- name: Enable and start ussycode service
+  ansible.builtin.systemd:
+    name: ussycode
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when: ussycode_binary.stat.exists
+  tags: [ussycode, service]
+
+- name: Wait for ussycode to be ready
+  ansible.builtin.wait_for:
+    port: "{{ ussycode_ssh_port }}"
+    host: "0.0.0.0"
+    delay: 3
+    timeout: 30
+  when: ussycode_binary.stat.exists
+  tags: [ussycode, verify]
+
+- name: Display deployment summary
+  ansible.builtin.debug:
+    msg:
+      - "ussycode deployed successfully!"
+      - "  Domain:    {{ ussycode_domain }}"
+      - "  SSH port:  {{ ussycode_ssh_port }}"
+      - "  Data dir:  {{ ussycode_data_dir }}"
+      - "  Config:    {{ ussycode_config_dir }}/ussycode.env"
+      - "  Service:   systemctl status ussycode"
+      - "  Logs:      journalctl -u ussycode -f"
+      - ""
+      - "Connect with: ssh -p {{ ussycode_ssh_port }} {{ ussycode_domain }}"
+  tags: [ussycode, verify]

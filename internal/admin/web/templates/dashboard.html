@@ -1,0 +1,73 @@
+{{define "dashboard.html"}}
+{{template "layout_head" .}}
+
+<div class="page-header">
+    <h1>Dashboard</h1>
+    <p class="subtitle">System overview for {{.Domain}}</p>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="label">Total Users</div>
+        <div class="value info">{{.Stats.TotalUsers}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Total VMs</div>
+        <div class="value">{{.Stats.TotalVMs}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Running VMs</div>
+        <div class="value success">{{.Stats.RunningVMs}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Stopped VMs</div>
+        <div class="value">{{.Stats.StoppedVMs}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Error VMs</div>
+        <div class="value danger">{{.Stats.ErrorVMs}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Active Shares</div>
+        <div class="value">{{.Stats.TotalShares}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">API Tokens</div>
+        <div class="value">{{.Stats.TotalAPITokens}}</div>
+    </div>
+</div>
+
+<h2 class="section-header">Recent Users</h2>
+
+{{if .Stats.RecentUsers}}
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Handle</th>
+                <th>Trust Level</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Stats.RecentUsers}}
+            <tr>
+                <td class="mono">{{.ID}}</td>
+                <td><a href="/admin/users/{{.ID}}">{{.Handle}}</a></td>
+                <td><span class="badge {{trustBadge .TrustLevel}}">{{.TrustLevel}}</span></td>
+                <td>{{timeAgo .CreatedAt}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{else}}
+<div class="empty-state">
+    <h3>No users yet</h3>
+    <p>Users are created when they first SSH into the gateway.</p>
+</div>
+{{end}}
+
+{{template "layout_foot" .}}
+{{end}}

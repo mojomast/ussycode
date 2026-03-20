@@ -1,0 +1,15 @@
+---
+# roles/monitoring/handlers/main.yml
+- name: restart node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: restarted
+
+- name: restart grafana
+  ansible.builtin.systemd:
+    name: grafana-server
+    state: restarted
+
+- name: daemon reload
+  ansible.builtin.systemd:
+    daemon_reload: yes

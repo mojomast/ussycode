@@ -1,0 +1,170 @@
+---
+# roles/monitoring/tasks/main.yml — Install monitoring stack
+#
+# Installs Prometheus node_exporter for system metrics, configures a
+# Prometheus scrape target for ussycode's built-in metrics endpoint,
+# and optionally installs Grafana with a basic dashboard.
+
+# ---------------------------------------------------------------------------
+# Node Exporter
+# ---------------------------------------------------------------------------
+
+- name: Check if node_exporter is installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/node_exporter
+  register: ne_binary
+  tags: [monitoring, node_exporter]
+
+- name: Create node_exporter user
+  ansible.builtin.user:
+    name: node_exporter
+    system: yes
+    shell: /usr/sbin/nologin
+    create_home: no
+  tags: [monitoring, node_exporter]
+
+- name: Download node_exporter
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}.tar.gz"
+    dest: /tmp/node_exporter.tar.gz
+    mode: "0644"
+  when: not ne_binary.stat.exists
+  tags: [monitoring, node_exporter]
+
+- name: Extract node_exporter
+  ansible.builtin.unarchive:
+    src: /tmp/node_exporter.tar.gz
+    dest: /tmp/
+    remote_src: yes
+  when: not ne_binary.stat.exists
+  tags: [monitoring, node_exporter]
+
+- name: Install node_exporter binary
+  ansible.builtin.copy:
+    src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}/node_exporter"
+    dest: /usr/local/bin/node_exporter
+    mode: "0755"
+    remote_src: yes
+  when: not ne_binary.stat.exists
+  notify: restart node_exporter
+  tags: [monitoring, node_exporter]
+
+- name: Clean up node_exporter download
+  ansible.builtin.file:
+    path: "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}"
+    state: absent
+  when: not ne_binary.stat.exists
+  tags: [monitoring, node_exporter]
+
+- name: Create node_exporter systemd service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/node_exporter.service
+    content: |
+      [Unit]
+      Description=Prometheus Node Exporter
+      Documentation=https://prometheus.io/docs/guides/node-exporter/
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=node_exporter
+      Group=node_exporter
+      ExecStart=/usr/local/bin/node_exporter \
+        --web.listen-address={{ node_exporter_listen }} \
+        --collector.systemd \
+        --collector.processes
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+    mode: "0644"
+  notify:
+    - daemon reload
+    - restart node_exporter
+  tags: [monitoring, node_exporter]
+
+- name: Enable and start node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  tags: [monitoring, node_exporter]
+
+# ---------------------------------------------------------------------------
+# Prometheus scrape config for ussycode
+# ---------------------------------------------------------------------------
+
+- name: Create Prometheus config directory
+  ansible.builtin.file:
+    path: /etc/prometheus
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [monitoring, prometheus]
+
+- name: Create Prometheus scrape config for ussycode
+  ansible.builtin.template:
+    src: prometheus-ussycode.yml.j2
+    dest: /etc/prometheus/ussycode-targets.yml
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [monitoring, prometheus]
+
+# ---------------------------------------------------------------------------
+# Grafana (optional)
+# ---------------------------------------------------------------------------
+
+- name: Install Grafana
+  when: install_grafana
+  block:
+    - name: Add Grafana GPG key
+      ansible.builtin.shell: |
+        curl -fsSL https://apt.grafana.com/gpg.key | \
+          gpg --dearmor -o /usr/share/keyrings/grafana-archive-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/grafana-archive-keyring.gpg
+
+    - name: Add Grafana apt repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/grafana.list
+        content: |
+          deb [signed-by=/usr/share/keyrings/grafana-archive-keyring.gpg] https://apt.grafana.com stable main
+        mode: "0644"
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install Grafana
+      ansible.builtin.apt:
+        name: grafana
+        state: present
+
+    - name: Configure Grafana admin password
+      ansible.builtin.lineinfile:
+        path: /etc/grafana/grafana.ini
+        regexp: "^;admin_password ="
+        line: "admin_password = {{ grafana_admin_password }}"
+      notify: restart grafana
+
+    - name: Enable and start Grafana
+      ansible.builtin.systemd:
+        name: grafana-server
+        enabled: yes
+        state: started
+  tags: [monitoring, grafana]
+
+- name: Display monitoring summary
+  ansible.builtin.debug:
+    msg:
+      - "Monitoring setup complete:"
+      - "  Node Exporter: http://localhost:9100/metrics"
+      - "  ussycode metrics: http://localhost:{{ ussycode_metrics_port }}/metrics"
+      - "  Prometheus targets: /etc/prometheus/ussycode-targets.yml"
+      - "{% if install_grafana %}  Grafana: http://localhost:3000 (admin/{{ grafana_admin_password }}){% endif %}"
+  tags: [monitoring]

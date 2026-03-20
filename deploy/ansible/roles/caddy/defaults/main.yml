@@ -1,0 +1,7 @@
+---
+# roles/caddy/defaults/main.yml — Default variables for Caddy role
+ussycode_domain: ussyco.de
+ussycode_acme_email: ""
+caddy_admin_listen: "localhost:2019"
+caddy_dns_provider: cloudflare
+caddy_dns_api_token: ""

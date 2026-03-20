@@ -8,7 +8,7 @@ import (
 
 func TestOpenAndMigrate(t *testing.T) {
 	// Create a temp file for the database
-	f, err := os.CreateTemp("", "exedevussy-test-*.db")
+	f, err := os.CreateTemp("", "ussycode-test-*.db")
 	if err != nil {
 		t.Fatal(err)
 	}

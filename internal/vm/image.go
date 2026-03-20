@@ -1,5 +1,5 @@
 // Package vm implements microVM lifecycle management, OCI image pulling,
-// rootfs creation, and Firecracker integration for exedevussy.
+// rootfs creation, and Firecracker integration for ussycode.
 package vm
 
 import (
@@ -42,7 +42,7 @@ type ImageManager struct {
 }
 
 // NewImageManager creates a new ImageManager.
-// cacheDir is where built rootfs images are stored (e.g., /var/lib/exedevussy/images).
+// cacheDir is where built rootfs images are stored (e.g., /var/lib/ussycode/images).
 func NewImageManager(cacheDir string, logger *slog.Logger) (*ImageManager, error) {
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return nil, fmt.Errorf("create cache dir: %w", err)
@@ -114,7 +114,7 @@ func (im *ImageManager) EnsureRootfs(ctx context.Context, imageRef string) (stri
 	}
 
 	// Extract flattened rootfs to a temp directory
-	tmpDir, err := os.MkdirTemp("", "exedevussy-rootfs-*")
+	tmpDir, err := os.MkdirTemp("", "ussycode-rootfs-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("create temp dir: %w", err)
 	}
@@ -287,7 +287,7 @@ func (im *ImageManager) ensureEssentialDirs(rootDir string) error {
 	// Ensure /etc/hostname exists
 	hostname := filepath.Join(rootDir, "etc", "hostname")
 	if _, err := os.Stat(hostname); os.IsNotExist(err) {
-		if err := os.WriteFile(hostname, []byte("exedev\n"), 0644); err != nil {
+		if err := os.WriteFile(hostname, []byte("ussycode\n"), 0644); err != nil {
 			return fmt.Errorf("write hostname: %w", err)
 		}
 	}

@@ -1,0 +1,48 @@
+{{define "vms.html"}}
+{{template "layout_head" .}}
+
+<div class="page-header">
+    <h1>Virtual Machines</h1>
+    <p class="subtitle">All VMs across all users</p>
+</div>
+
+{{if .VMs}}
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Owner</th>
+                <th>Status</th>
+                <th>Image</th>
+                <th>Resources</th>
+                <th>IP Address</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .VMs}}
+            <tr>
+                <td class="mono">{{.ID}}</td>
+                <td><a href="/admin/vms/{{.ID}}">{{.Name}}</a></td>
+                <td><a href="/admin/users/{{.UserID}}">{{.OwnerHandle}}</a></td>
+                <td><span class="badge {{statusBadge .Status}}">{{.Status}}</span></td>
+                <td>{{.Image}}</td>
+                <td class="mono">{{.VCPU}}c / {{.MemoryMB}}MB / {{.DiskGB}}GB</td>
+                <td class="mono">{{nullStr .IPAddress}}</td>
+                <td>{{timeAgo .CreatedAt}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{else}}
+<div class="empty-state">
+    <h3>No VMs yet</h3>
+    <p>VMs are created by users via the SSH shell.</p>
+</div>
+{{end}}
+
+{{template "layout_foot" .}}
+{{end}}

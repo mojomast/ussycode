@@ -1,10 +1,10 @@
 #!/bin/bash
-# init-exedev.sh -- runs on VM boot to configure the environment.
-# Called by exedev-init.service (systemd oneshot).
+# init-ussycode.sh -- runs on VM boot to configure the environment.
+# Called by ussycode-init.service (systemd oneshot).
 #
 # Responsibilities:
 #   1. Mount the persistent data disk at /data
-#   2. Symlink /home/exedev/projects -> /data/projects
+#   2. Symlink /home/ussycode/projects -> /data/projects
 #   3. Fetch SSH authorized keys from the metadata service
 #   4. Configure hostname from metadata
 
@@ -13,7 +13,7 @@ set -euo pipefail
 METADATA_URL="http://169.254.169.254"
 
 log() {
-    echo "[exedev-init] $*" | systemd-cat -t exedev-init
+    echo "[ussycode-init] $*" | systemd-cat -t ussycode-init
 }
 
 # ── Mount data disk ──────────────────────────────────────────────────
@@ -31,18 +31,18 @@ if [ -b "$DATA_DISK" ]; then
 
     # Ensure projects directory exists on data disk
     mkdir -p "$DATA_MOUNT/projects"
-    chown exedev:exedev "$DATA_MOUNT" "$DATA_MOUNT/projects"
+    chown ussycode:ussycode "$DATA_MOUNT" "$DATA_MOUNT/projects"
 
     # Symlink home projects to data disk
-    if [ ! -L /home/exedev/projects ]; then
-        rm -rf /home/exedev/projects
-        ln -s "$DATA_MOUNT/projects" /home/exedev/projects
-        chown -h exedev:exedev /home/exedev/projects
+    if [ ! -L /home/ussycode/projects ]; then
+        rm -rf /home/ussycode/projects
+        ln -s "$DATA_MOUNT/projects" /home/ussycode/projects
+        chown -h ussycode:ussycode /home/ussycode/projects
     fi
 else
     log "No data disk found at $DATA_DISK, using rootfs"
-    mkdir -p /home/exedev/projects
-    chown exedev:exedev /home/exedev/projects
+    mkdir -p /home/ussycode/projects
+    chown ussycode:ussycode /home/ussycode/projects
 fi
 
 # ── Fetch metadata ───────────────────────────────────────────────────
@@ -64,19 +64,19 @@ fi
 SSH_KEYS=$(fetch_metadata "/ssh-keys")
 if [ -n "$SSH_KEYS" ]; then
     log "Installing SSH authorized keys from metadata"
-    mkdir -p /home/exedev/.ssh
-    echo "$SSH_KEYS" > /home/exedev/.ssh/authorized_keys
-    chmod 700 /home/exedev/.ssh
-    chmod 600 /home/exedev/.ssh/authorized_keys
-    chown -R exedev:exedev /home/exedev/.ssh
+    mkdir -p /home/ussycode/.ssh
+    echo "$SSH_KEYS" > /home/ussycode/.ssh/authorized_keys
+    chmod 700 /home/ussycode/.ssh
+    chmod 600 /home/ussycode/.ssh/authorized_keys
+    chown -R ussycode:ussycode /home/ussycode/.ssh
 fi
 
 # Fetch environment variables
 ENV_VARS=$(fetch_metadata "/env")
 if [ -n "$ENV_VARS" ]; then
     log "Writing environment variables"
-    echo "$ENV_VARS" > /home/exedev/.exedev-env
-    chown exedev:exedev /home/exedev/.exedev-env
+    echo "$ENV_VARS" > /home/ussycode/.ussycode-env
+    chown ussycode:ussycode /home/ussycode/.ussycode-env
 fi
 
 # ── Set default gateway ─────────────────────────────────────────────

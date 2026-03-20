@@ -1,0 +1,18 @@
+---
+# deploy/ansible/site.yml — Main playbook for ussycode control plane
+#
+# Usage:
+#   ansible-playbook site.yml
+#   ansible-playbook site.yml -i inventory/multi-node.ini
+#   ansible-playbook site.yml --tags ussycode   # redeploy only ussycode
+#
+- name: Deploy ussycode control plane
+  hosts: control_plane
+  become: yes
+  roles:
+    - common
+    - zfs
+    - firecracker
+    - caddy
+    - ussycode
+    - monitoring

@@ -1,0 +1,104 @@
+---
+# roles/zfs/tasks/main.yml — Install and configure ZFS storage
+#
+# Creates a ZFS pool with dataset hierarchy for ussycode VMs, images,
+# and user data. The pool device and name are configurable.
+
+- name: Install ZFS packages
+  ansible.builtin.apt:
+    name:
+      - zfsutils-linux
+      - zfs-dkms
+    state: present
+  tags: [zfs, packages]
+
+- name: Ensure ZFS kernel module is loaded
+  community.general.modprobe:
+    name: zfs
+    state: present
+  tags: [zfs]
+
+- name: Check if ZFS pool already exists
+  ansible.builtin.command: zpool list {{ ussycode_zfs_pool }}
+  register: zpool_check
+  failed_when: false
+  changed_when: false
+  tags: [zfs]
+
+- name: Check if device exists
+  ansible.builtin.stat:
+    path: "{{ ussycode_zfs_device }}"
+  register: zfs_device_stat
+  when: zpool_check.rc != 0
+  tags: [zfs]
+
+- name: Fail if ZFS device does not exist and pool not created
+  ansible.builtin.fail:
+    msg: >
+      ZFS device {{ ussycode_zfs_device }} does not exist and pool
+      {{ ussycode_zfs_pool }} is not already created. Set ussycode_zfs_device
+      to a valid block device.
+  when:
+    - zpool_check.rc != 0
+    - not (zfs_device_stat.stat.exists | default(false))
+  tags: [zfs]
+
+- name: Create ZFS pool
+  ansible.builtin.command: >
+    zpool create
+    -o ashift=12
+    -O compression={{ ussycode_zfs_compression }}
+    -O atime={{ ussycode_zfs_atime }}
+    -O mountpoint=/{{ ussycode_zfs_pool }}
+    {{ ussycode_zfs_pool }}
+    {{ ussycode_zfs_device }}
+  when: zpool_check.rc != 0
+  tags: [zfs]
+
+- name: Set pool-level properties
+  ansible.builtin.command: >
+    zfs set {{ item.property }}={{ item.value }} {{ ussycode_zfs_pool }}
+  loop:
+    - { property: "compression", value: "{{ ussycode_zfs_compression }}" }
+    - { property: "atime", value: "{{ ussycode_zfs_atime }}" }
+  changed_when: false
+  tags: [zfs]
+
+- name: Create ZFS datasets
+  community.general.zfs:
+    name: "{{ item }}"
+    state: present
+    extra_zfs_properties:
+      compression: "{{ ussycode_zfs_compression }}"
+      atime: "{{ ussycode_zfs_atime }}"
+  loop: "{{ ussycode_zfs_datasets }}"
+  tags: [zfs]
+
+- name: Set mountpoint permissions for datasets
+  ansible.builtin.file:
+    path: "/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ ussycode_zfs_datasets }}"
+  tags: [zfs]
+
+- name: Enable ZFS auto-scrub timer
+  ansible.builtin.systemd:
+    name: zfs-scrub-weekly@{{ ussycode_zfs_pool }}.timer
+    enabled: yes
+    state: started
+  failed_when: false
+  tags: [zfs]
+
+- name: Verify ZFS pool health
+  ansible.builtin.command: zpool status {{ ussycode_zfs_pool }}
+  register: zpool_status
+  changed_when: false
+  tags: [zfs]
+
+- name: Display ZFS pool status
+  ansible.builtin.debug:
+    msg: "{{ zpool_status.stdout_lines }}"
+  tags: [zfs]

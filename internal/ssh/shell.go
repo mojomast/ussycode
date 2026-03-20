@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	gssh "github.com/gliderlabs/ssh"
-	"github.com/mojomast/exedevussy/internal/db"
-	"github.com/mojomast/exedevussy/internal/gateway"
+	"github.com/mojomast/ussycode/internal/db"
+	"github.com/mojomast/ussycode/internal/gateway"
 	"golang.org/x/term"
 )
 
@@ -95,7 +95,9 @@ func (s *Shell) printWelcome() {
 	total, _ := s.gw.DB.VMCountByUser(context.Background(), s.user.ID)
 
 	s.writeln("")
-	s.writef("  welcome back, %s.\n", s.user.Handle)
+	s.writeln("  \033[35m~ ussycode ~\033[0m  \033[90mpart of the ussyverse  |  https://ussy.host\033[0m")
+	s.writeln("")
+	s.writef("  welcome back, \033[1m%s\033[0m.\n", s.user.Handle)
 
 	switch {
 	case running > 0:
@@ -107,7 +109,7 @@ func (s *Shell) printWelcome() {
 		s.writeln("  you have no vms yet. type 'new' to create one.")
 	}
 
-	s.writeln("  type 'help' for commands.")
+	s.writeln("  type 'help' for commands. type 'community' for links & stats.")
 	s.writeln("")
 }
 
@@ -121,6 +123,23 @@ func (s *Shell) writef(format string, args ...interface{}) {
 	if s.term != nil {
 		fmt.Fprintf(s.term, format, args...)
 	}
+}
+
+// dispatchCommand parses and executes a command line string through the
+// shell's command handlers. Used by the tutorial to run real commands.
+func (s *Shell) dispatchCommand(line string) error {
+	parts := strings.Fields(strings.TrimSpace(line))
+	if len(parts) == 0 {
+		return nil
+	}
+	cmd := parts[0]
+	args := parts[1:]
+
+	handler, ok := commands[cmd]
+	if !ok {
+		return fmt.Errorf("unknown command: %s", cmd)
+	}
+	return handler(s, args)
 }
 
 func plural(n int) string {

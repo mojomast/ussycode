@@ -1,0 +1,30 @@
+---
+# roles/ussycode/defaults/main.yml — Default variables for ussycode role
+ussycode_version: "latest"
+ussycode_binary_url: ""
+ussycode_build_from_source: false
+ussycode_go_version: "1.25.7"
+ussycode_repo: "https://github.com/mojomast/ussycode.git"
+
+ussycode_domain: ussyco.de
+ussycode_ssh_port: "2222"
+ussycode_http_port: "8080"
+ussycode_data_dir: /var/lib/ussycode
+ussycode_config_dir: /etc/ussycode
+ussycode_db_path: /var/lib/ussycode/ussycode.db
+ussycode_caddy_api: "http://localhost:2019"
+ussycode_zfs_pool: vmpool
+ussycode_acme_email: ""
+
+ussycode_ssh_addr: ":2222"
+ussycode_http_addr: ":8080"
+ussycode_default_image: "ussyuntu"
+ussycode_storage_backend: "zfs"
+ussycode_network_bridge: "ussy0"
+ussycode_network_subnet: "10.0.0.0/24"
+ussycode_max_vms_per_user: 5
+ussycode_default_cpu: 1
+ussycode_default_mem: 512
+ussycode_default_disk: 5
+ussycode_dns_provider: "cloudflare"
+ussycode_dns_api_token: ""

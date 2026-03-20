@@ -1,0 +1,8 @@
+---
+# roles/monitoring/defaults/main.yml — Default variables for monitoring role
+node_exporter_version: "1.8.2"
+node_exporter_listen: ":9100"
+ussycode_metrics_port: "8080"
+install_grafana: false
+grafana_admin_password: "changeme"
+prometheus_scrape_interval: "15s"

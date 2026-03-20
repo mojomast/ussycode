@@ -1,0 +1,171 @@
+---
+# roles/firecracker/tasks/main.yml — Install and configure Firecracker
+#
+# Downloads the Firecracker binary and guest kernel, sets up jailer
+# directories, and configures KVM device permissions for running microVMs.
+
+- name: Detect system architecture
+  ansible.builtin.set_fact:
+    firecracker_arch: "{{ 'x86_64' if ansible_architecture == 'x86_64' else 'aarch64' }}"
+  tags: [firecracker]
+
+- name: Check if Firecracker is already installed
+  ansible.builtin.stat:
+    path: "{{ firecracker_install_dir }}/firecracker"
+  register: fc_binary
+  tags: [firecracker]
+
+- name: Check installed Firecracker version
+  ansible.builtin.command: "{{ firecracker_install_dir }}/firecracker --version"
+  register: fc_version_check
+  when: fc_binary.stat.exists
+  changed_when: false
+  failed_when: false
+  tags: [firecracker]
+
+- name: Create temp directory for Firecracker download
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: firecracker_
+  register: fc_tmpdir
+  when: >
+    not fc_binary.stat.exists or
+    (fc_version_check.stdout is defined and firecracker_version not in fc_version_check.stdout)
+  tags: [firecracker]
+
+- name: Download Firecracker release archive
+  ansible.builtin.get_url:
+    url: "https://github.com/firecracker-microvm/firecracker/releases/download/v{{ firecracker_version }}/firecracker-v{{ firecracker_version }}-{{ firecracker_arch }}.tgz"
+    dest: "{{ fc_tmpdir.path }}/firecracker.tgz"
+    mode: "0644"
+  when: fc_tmpdir.path is defined
+  tags: [firecracker]
+
+- name: Extract Firecracker archive
+  ansible.builtin.unarchive:
+    src: "{{ fc_tmpdir.path }}/firecracker.tgz"
+    dest: "{{ fc_tmpdir.path }}/"
+    remote_src: yes
+  when: fc_tmpdir.path is defined
+  tags: [firecracker]
+
+- name: Install Firecracker binary
+  ansible.builtin.copy:
+    src: "{{ fc_tmpdir.path }}/release-v{{ firecracker_version }}-{{ firecracker_arch }}/firecracker-v{{ firecracker_version }}-{{ firecracker_arch }}"
+    dest: "{{ firecracker_install_dir }}/firecracker"
+    mode: "0755"
+    remote_src: yes
+  when: fc_tmpdir.path is defined
+  tags: [firecracker]
+
+- name: Install jailer binary
+  ansible.builtin.copy:
+    src: "{{ fc_tmpdir.path }}/release-v{{ firecracker_version }}-{{ firecracker_arch }}/jailer-v{{ firecracker_version }}-{{ firecracker_arch }}"
+    dest: "{{ firecracker_install_dir }}/jailer"
+    mode: "0755"
+    remote_src: yes
+  when: fc_tmpdir.path is defined
+  tags: [firecracker]
+
+- name: Clean up temp directory
+  ansible.builtin.file:
+    path: "{{ fc_tmpdir.path }}"
+    state: absent
+  when: fc_tmpdir.path is defined
+  tags: [firecracker]
+
+- name: Create jailer root directory
+  ansible.builtin.file:
+    path: "{{ firecracker_jailer_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+  tags: [firecracker]
+
+- name: Create jailer subdirectories
+  ansible.builtin.file:
+    path: "{{ firecracker_jailer_dir }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+  loop:
+    - firecracker
+    - rootfs
+  tags: [firecracker]
+
+- name: Ensure /dev/kvm exists
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: kvm_device
+  tags: [firecracker]
+
+- name: Warn if KVM is not available
+  ansible.builtin.debug:
+    msg: >
+      WARNING: /dev/kvm not found. Ensure CPU virtualization (VT-x/AMD-V)
+      is enabled in BIOS/UEFI and the kvm kernel module is loaded.
+      Run: modprobe kvm_intel (or kvm_amd)
+  when: not kvm_device.stat.exists
+  tags: [firecracker]
+
+- name: Set KVM device permissions
+  ansible.builtin.file:
+    path: /dev/kvm
+    owner: root
+    group: kvm
+    mode: "0666"
+  when: kvm_device.stat.exists
+  tags: [firecracker]
+
+- name: Create udev rule for KVM permissions
+  ansible.builtin.copy:
+    dest: /etc/udev/rules.d/99-kvm.rules
+    content: |
+      # Allow access to /dev/kvm for ussycode VMs
+      KERNEL=="kvm", GROUP="kvm", MODE="0666"
+    mode: "0644"
+  notify: reload udev
+  tags: [firecracker]
+
+- name: Ensure kvm group exists
+  ansible.builtin.group:
+    name: kvm
+    system: yes
+    state: present
+  tags: [firecracker]
+
+- name: Create kernel directory
+  ansible.builtin.file:
+    path: "{{ firecracker_kernel_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [firecracker]
+
+- name: Check if guest kernel exists
+  ansible.builtin.stat:
+    path: "{{ firecracker_kernel_path }}"
+  register: kernel_file
+  tags: [firecracker]
+
+- name: Download guest kernel
+  ansible.builtin.get_url:
+    url: "{{ firecracker_kernel_url }}"
+    dest: "{{ firecracker_kernel_path }}"
+    mode: "0644"
+  when: not kernel_file.stat.exists
+  tags: [firecracker]
+
+- name: Verify Firecracker installation
+  ansible.builtin.command: "{{ firecracker_install_dir }}/firecracker --version"
+  register: fc_installed_version
+  changed_when: false
+  tags: [firecracker]
+
+- name: Display Firecracker version
+  ansible.builtin.debug:
+    msg: "{{ fc_installed_version.stdout }}"
+  tags: [firecracker]

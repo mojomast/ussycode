@@ -1,0 +1,6 @@
+{
+  "name": "ragussy",
+  "description": "Self-hosted RAG chatbot with local embeddings",
+  "ports": [8080, 11434],
+  "post_create": "#!/bin/bash\nset -e\nmkdir -p /home/ussycode/ragussy\necho 'RAGussy template ready. Install ollama for local LLM.'"
+}

@@ -1,4 +1,4 @@
-# exedevussy SSH server configuration for microVMs
+# ussycode SSH server configuration for microVMs
 # Optimized for Firecracker environments
 
 Port 22
@@ -37,5 +37,5 @@ PrintLastLog no
 # Subsystem
 Subsystem sftp /usr/lib/openssh/sftp-server
 
-# Allow the exedev user
-AllowUsers exedev
+# Allow the ussycode user
+AllowUsers ussycode

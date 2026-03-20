@@ -1,0 +1,9 @@
+{
+  "name": "battlebussy-agent",
+  "description": "Autonomous CTF agent with BattleBussy SDK",
+  "ports": [8080, 9090],
+  "post_create": "#!/bin/bash\nset -e\nmkdir -p /home/ussycode/agent\ncat > /home/ussycode/agent/main.go << 'GOEOF'\npackage main\n\nimport (\n\t\"fmt\"\n\t\"net/http\"\n\t\"os\"\n)\n\nfunc main() {\n\tfmt.Println(\"BattleBussy Agent starting...\")\n\tfmt.Printf(\"Arena endpoint: %s\\n\", os.Getenv(\"ARENA_ENDPOINT\"))\n\thttp.HandleFunc(\"/health\", func(w http.ResponseWriter, r *http.Request) {\n\t\tw.Write([]byte(\"ok\"))\n\t})\n\thttp.ListenAndServe(\":8080\", nil)\n}\nGOEOF\ncd /home/ussycode/agent\ngo mod init battlebussy-agent\necho 'Agent scaffold ready. Run: cd agent && go run .'",
+  "env": {
+    "ARENA_ENDPOINT": "https://ussyco.de/arena"
+  }
+}

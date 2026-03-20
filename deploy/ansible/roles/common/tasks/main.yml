@@ -1,0 +1,113 @@
+---
+# roles/common/tasks/main.yml — Base system setup
+#
+# Sets up the common system foundation: packages, firewall, hostname,
+# and the ussycode system user.
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  tags: [common, packages]
+
+- name: Upgrade all packages to latest
+  ansible.builtin.apt:
+    upgrade: safe
+    autoremove: yes
+  tags: [common, packages]
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+  tags: [common, packages]
+
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ ussycode_hostname }}"
+  tags: [common, hostname]
+
+- name: Add hostname to /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^127\\.0\\.1\\.1"
+    line: "127.0.1.1 {{ ussycode_hostname }}"
+    state: present
+  tags: [common, hostname]
+
+- name: Install UFW
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+  tags: [common, firewall]
+
+- name: Set UFW default incoming policy to deny
+  community.general.ufw:
+    direction: incoming
+    default: deny
+  tags: [common, firewall]
+
+- name: Set UFW default outgoing policy to allow
+  community.general.ufw:
+    direction: outgoing
+    default: allow
+  tags: [common, firewall]
+
+- name: Allow UFW ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port | string }}"
+    proto: "{{ item.proto }}"
+    comment: "{{ item.comment }}"
+  loop: "{{ ufw_allowed_ports }}"
+  tags: [common, firewall]
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+  tags: [common, firewall]
+
+- name: Create ussycode system group
+  ansible.builtin.group:
+    name: "{{ ussycode_system_group }}"
+    system: yes
+    state: present
+  tags: [common, user]
+
+- name: Create ussycode system user
+  ansible.builtin.user:
+    name: "{{ ussycode_system_user }}"
+    group: "{{ ussycode_system_group }}"
+    system: yes
+    shell: /usr/sbin/nologin
+    home: /var/lib/ussycode
+    create_home: no
+    comment: "ussycode platform service account"
+  tags: [common, user]
+
+- name: Configure sysctl for VM networking
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: yes
+    state: present
+    reload: yes
+  loop:
+    - { key: "net.ipv4.ip_forward", value: "1" }
+    - { key: "net.ipv4.conf.all.forwarding", value: "1" }
+    - { key: "net.bridge.bridge-nf-call-iptables", value: "0" }
+    - { key: "fs.inotify.max_user_instances", value: "1024" }
+    - { key: "fs.inotify.max_user_watches", value: "1048576" }
+  tags: [common, sysctl]
+
+- name: Set open file limits
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/99-ussycode.conf
+    content: |
+      # ussycode platform limits
+      *       soft    nofile    65535
+      *       hard    nofile    65535
+      root    soft    nofile    65535
+      root    hard    nofile    65535
+    mode: "0644"
+  tags: [common, limits]

@@ -1,0 +1,85 @@
+{{define "vm_detail.html"}}
+{{template "layout_head" .}}
+
+<div class="page-header">
+    <h1>VM: {{.VM.Name}}</h1>
+    <p class="subtitle">
+        <span class="badge {{statusBadge .VM.Status}}">{{.VM.Status}}</span>
+        &middot; Owned by <a href="/admin/users/{{.Owner.ID}}">{{.Owner.Handle}}</a>
+    </p>
+</div>
+
+<dl class="detail-grid">
+    <dt>ID</dt>
+    <dd class="mono">{{.VM.ID}}</dd>
+    <dt>Name</dt>
+    <dd>{{.VM.Name}}</dd>
+    <dt>Status</dt>
+    <dd><span class="badge {{statusBadge .VM.Status}}">{{.VM.Status}}</span></dd>
+    <dt>Owner</dt>
+    <dd><a href="/admin/users/{{.Owner.ID}}">{{.Owner.Handle}}</a></dd>
+    <dt>Image</dt>
+    <dd>{{.VM.Image}}</dd>
+    <dt>vCPUs</dt>
+    <dd class="mono">{{.VM.VCPU}}</dd>
+    <dt>Memory</dt>
+    <dd class="mono">{{.VM.MemoryMB}} MB</dd>
+    <dt>Disk</dt>
+    <dd class="mono">{{.VM.DiskGB}} GB</dd>
+    <dt>IP Address</dt>
+    <dd class="mono">{{nullStr .VM.IPAddress}}</dd>
+    <dt>MAC Address</dt>
+    <dd class="mono">{{nullStr .VM.MACAddress}}</dd>
+    <dt>Tap Device</dt>
+    <dd class="mono">{{nullStr .VM.TapDevice}}</dd>
+    <dt>PID</dt>
+    <dd class="mono">{{nullInt .VM.PID}}</dd>
+    <dt>Created</dt>
+    <dd>{{timeAgo .VM.CreatedAt}}</dd>
+    <dt>Updated</dt>
+    <dd>{{timeAgo .VM.UpdatedAt}}</dd>
+</dl>
+
+{{if .Tags}}
+<h2 class="section-header">Tags</h2>
+<div style="margin-bottom: 1.5rem;">
+    {{range .Tags}}
+    <span class="badge badge-citizen">{{.}}</span>
+    {{end}}
+</div>
+{{end}}
+
+{{if .Shares}}
+<h2 class="section-header">Shares ({{len .Shares}})</h2>
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Type</th>
+                <th>Detail</th>
+                <th>Public</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Shares}}
+            <tr>
+                <td class="mono">{{.ID}}</td>
+                <td>
+                    {{if .SharedWith.Valid}}User{{else if .LinkToken.Valid}}Link{{else}}Public Flag{{end}}
+                </td>
+                <td class="mono">
+                    {{if .SharedWith.Valid}}user:{{.SharedWith.Int64}}{{else if .LinkToken.Valid}}{{truncate .LinkToken.String 16}}{{else}}—{{end}}
+                </td>
+                <td>{{if .IsPublic}}<span class="badge badge-running">yes</span>{{else}}<span class="badge badge-stopped">no</span>{{end}}</td>
+                <td>{{timeAgo .CreatedAt}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+
+{{template "layout_foot" .}}
+{{end}}

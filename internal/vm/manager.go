@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/mojomast/exedevussy/internal/db"
+	"github.com/mojomast/ussycode/internal/db"
 )
 
 // Manager orchestrates VM lifecycle: image pulling, rootfs creation,
@@ -17,7 +17,7 @@ import (
 type Manager struct {
 	db      *db.DB
 	images  *ImageManager
-	network *NetworkManager
+	network NetworkBackend
 	fc      *FirecrackerBackend
 	dataDir string
 	logger  *slog.Logger
@@ -403,7 +403,7 @@ func (m *Manager) ImageManager() *ImageManager {
 }
 
 // NetworkManager returns the network manager.
-func (m *Manager) NetworkManager() *NetworkManager {
+func (m *Manager) NetworkManager() NetworkBackend {
 	return m.network
 }
 

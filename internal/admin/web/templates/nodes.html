@@ -1,0 +1,45 @@
+{{define "nodes.html"}}
+{{template "layout_head" .}}
+
+<div class="page-header">
+    <h1>Nodes</h1>
+    <p class="subtitle">Server pool status (from scheduler)</p>
+</div>
+
+{{if .Nodes}}
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Address</th>
+                <th>Health</th>
+                <th>CPU Cores</th>
+                <th>RAM Total</th>
+                <th>Active VMs</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Nodes}}
+            <tr>
+                <td class="mono">{{.ID}}</td>
+                <td class="mono">{{.Address}}</td>
+                <td><span class="badge {{if eq .Health "healthy"}}badge-running{{else}}badge-error{{end}}">{{.Health}}</span></td>
+                <td class="mono">{{.CPUCores}}</td>
+                <td class="mono">{{.RAMTotal}} MB</td>
+                <td class="mono">{{.ActiveVMs}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{else}}
+<div class="empty-state">
+    <h3>No nodes registered</h3>
+    <p>Nodes are managed by the scheduler's NodeProvider.<br>
+       When nodes are configured, their live status will appear here.</p>
+</div>
+{{end}}
+
+{{template "layout_foot" .}}
+{{end}}

@@ -1,0 +1,33 @@
+[Unit]
+Description=ussycode - SSH dev environment platform
+Documentation=https://github.com/mojomast/ussycode
+After=network.target caddy.service
+Requires=caddy.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile={{ ussycode_config_dir | default('/etc/ussycode') }}/ussycode.env
+ExecStart=/usr/local/bin/ussycode serve
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# File descriptor limits for many concurrent VMs and SSH sessions
+LimitNOFILE=65535
+LimitNPROC=32768
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ussycode
+
+# Security: ussycode needs root for VM management (firecracker, networking)
+# but we still apply some hardening
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target

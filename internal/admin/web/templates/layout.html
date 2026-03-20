@@ -1,0 +1,36 @@
+{{define "layout_head"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ussycode admin{{if .Title}} - {{.Title}}{{end}}</title>
+    <link rel="stylesheet" href="/admin/static/style.css">
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <span class="logo">ussy://</span> admin
+        </div>
+        <nav>
+            <a href="/admin/">Dashboard</a>
+            <a href="/admin/users">Users</a>
+            <a href="/admin/vms">VMs</a>
+            <a href="/admin/nodes">Nodes</a>
+        </nav>
+        <div class="sidebar-footer">
+            Logged in as <span class="handle">{{.Session.Handle}}</span>
+            <form method="POST" action="/admin/logout" style="margin-top: 0.5rem;">
+                <button type="submit" class="btn btn-sm">Logout</button>
+            </form>
+        </div>
+    </aside>
+    <main class="main">
+{{end}}
+
+{{define "layout_foot"}}
+    </main>
+</div>
+</body>
+</html>
+{{end}}

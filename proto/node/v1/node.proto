@@ -1,0 +1,85 @@
+syntax = "proto3";
+package node.v1;
+option go_package = "github.com/mojomast/ussycode/proto/node/v1;nodev1";
+
+service NodeService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(stream HeartbeatRequest) returns (stream HeartbeatResponse);
+}
+
+message RegisterRequest {
+  string join_token = 1;
+  bytes public_key = 2;
+  NodeCapabilities capabilities = 3;
+}
+
+message RegisterResponse {
+  string node_id = 1;
+  bytes tls_certificate = 2;
+  bytes tls_key = 3;
+  bytes ca_certificate = 4;
+  string wireguard_cidr = 5;
+  repeated PeerInfo peers = 6;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  NodeStatus status = 2;
+}
+
+message HeartbeatResponse {
+  repeated Command commands = 1;
+}
+
+message NodeCapabilities {
+  int32 cpu_cores = 1;
+  int64 ram_bytes = 2;
+  int64 disk_bytes = 3;
+  bool kvm_available = 4;
+  bool zfs_available = 5;
+  string os_version = 6;
+  string agent_version = 7;
+}
+
+message NodeStatus {
+  double cpu_usage = 1;
+  int64 ram_used = 2;
+  int64 ram_total = 3;
+  int64 disk_used = 4;
+  int64 disk_total = 5;
+  int32 vm_count = 6;
+  int64 network_rx_bytes = 7;
+  int64 network_tx_bytes = 8;
+}
+
+message Command {
+  oneof command {
+    VMCreateCommand create_vm = 1;
+    VMStopCommand stop_vm = 2;
+    VMDestroyCommand destroy_vm = 3;
+    DrainCommand drain = 4;
+    UpdateConfigCommand update_config = 5;
+  }
+}
+
+message VMCreateCommand {
+  string vm_id = 1;
+  string user_id = 2;
+  string base_image = 3;
+  int32 vcpu_count = 4;
+  int64 mem_bytes = 5;
+  int64 disk_bytes = 6;
+  map<string, string> metadata = 7;
+}
+
+message VMStopCommand { string vm_id = 1; }
+message VMDestroyCommand { string vm_id = 1; }
+message DrainCommand { int64 deadline_seconds = 1; }
+message UpdateConfigCommand { map<string, string> config = 1; }
+
+message PeerInfo {
+  string node_id = 1;
+  string wireguard_public_key = 2;
+  string wireguard_endpoint = 3;
+  string wireguard_cidr = 4;
+}

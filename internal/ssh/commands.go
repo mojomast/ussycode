@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mojomast/ussycode/internal/db"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -37,13 +38,22 @@ var commands = map[string]CommandFunc{
 	"start":   cmdStart,
 	"ssh-key": cmdSSHKey,
 	"share":   cmdShare,
+	"admin":   cmdAdmin,
+	"llm-key": cmdLLMKey,
+	// tutorial is registered in tutorial.go init() to avoid init cycle
+}
+
+// RegisterCommand adds a command to the commands map at runtime.
+// Used by packages that would cause init cycles if registered statically.
+func RegisterCommand(name string, fn CommandFunc) {
+	commands[name] = fn
 }
 
 // ── help ──────────────────────────────────────────────────────────────
 
 func cmdHelp(s *Shell, args []string) error {
 	s.writeln("")
-	s.writeln("  \033[1m=== EXEDEVUSSY COMMANDS ===\033[0m")
+	s.writeln("  \033[1m=== USSYCODE COMMANDS ===\033[0m")
 	s.writeln("")
 	s.writeln("  \033[33mBASICS\033[0m")
 	s.writeln("    help          show this help")
@@ -65,10 +75,26 @@ func cmdHelp(s *Shell, args []string) error {
 	s.writeln("  \033[33mACCESS\033[0m")
 	s.writeln("    ssh <name>    connect to an environment")
 	s.writeln("    share         share access with others")
+	s.writeln("    browser       open web dashboard (magic link)")
 	s.writeln("")
 	s.writeln("  \033[33mIDENTITY\033[0m")
 	s.writeln("    ssh-key       manage your SSH keys")
+	s.writeln("    llm-key       manage LLM API keys")
 	s.writeln("")
+	s.writeln("  \033[33mARENA\033[0m")
+	s.writeln("    arena         CTF & agent competition")
+	s.writeln("")
+	s.writeln("  \033[33mUSSYVERSE\033[0m")
+	s.writeln("    community     ussyverse info, links & your stats")
+	s.writeln("")
+	s.writeln("  \033[33mLEARN\033[0m")
+	s.writeln("    tutorial      interactive tutorial (10 lessons)")
+	s.writeln("")
+	if s.user.TrustLevel == "admin" {
+		s.writeln("  \033[33mADMIN\033[0m")
+		s.writeln("    admin         admin-only commands")
+		s.writeln("")
+	}
 	s.writeln("  \033[33mOPTIONS\033[0m")
 	s.writeln("    new --name=<n> --image=<img>")
 	s.writeln("    ls -l         long format")
@@ -175,6 +201,16 @@ func cmdNew(s *Shell, args []string) error {
 		return fmt.Errorf("vm %q already exists", name)
 	}
 
+	// Enforce VM quota based on user's trust level
+	vmCount, err := s.gw.DB.GetUserVMCount(ctx, s.user.ID)
+	if err != nil {
+		return fmt.Errorf("check vm count: %w", err)
+	}
+	limits := db.GetTrustLimits(s.user.TrustLevel)
+	if limits.VMLimit >= 0 && vmCount >= limits.VMLimit {
+		return fmt.Errorf("VM limit reached (%d/%d). Upgrade trust level or remove a VM.", vmCount, limits.VMLimit)
+	}
+
 	// Use defaults: 1 vCPU, 512MB RAM, 5GB disk
 	vmRecord, err := s.gw.DB.CreateVM(ctx, s.user.ID, name, image, 1, 512, 5)
 	if err != nil {
@@ -256,10 +292,10 @@ func proxySSHSession(s *Shell, vmIP string) error {
 	addr := net.JoinHostPort(vmIP, "22")
 
 	// Use a host-level key to authenticate to the VM.
-	// The VM image is pre-configured to trust this key for the "exedev" user.
+	// The VM image is pre-configured to trust this key for the "ussycode" user.
 	// For now, use password-less auth (the VM trusts connections from the host bridge).
 	config := &gossh.ClientConfig{
-		User: "exedev",
+		User: "ussycode",
 		Auth: []gossh.AuthMethod{
 			// Try no-auth first (VMs may be configured to accept connections from host)
 			gossh.Password(""),
@@ -531,6 +567,16 @@ func cmdCp(s *Shell, args []string) error {
 	}
 	if existing != nil && err == nil {
 		return fmt.Errorf("vm %q already exists", dstName)
+	}
+
+	// Enforce VM quota
+	vmCount, err := s.gw.DB.GetUserVMCount(ctx, s.user.ID)
+	if err != nil {
+		return fmt.Errorf("check vm count: %w", err)
+	}
+	limits := db.GetTrustLimits(s.user.TrustLevel)
+	if limits.VMLimit >= 0 && vmCount >= limits.VMLimit {
+		return fmt.Errorf("VM limit reached (%d/%d). Upgrade trust level or remove a VM.", vmCount, limits.VMLimit)
 	}
 
 	s.writef("  cloning %s -> %s...", srcName, dstName)
@@ -1001,6 +1047,12 @@ func cmdShare(s *Shell, args []string) error {
 		return cmdShareSetPublic(s, args[1:], false)
 	case "list", "ls":
 		return cmdShareList(s, args[1:])
+	case "cname":
+		return cmdShareCname(s, args[1:])
+	case "cname-verify":
+		return cmdShareCnameVerify(s, args[1:])
+	case "cname-rm":
+		return cmdShareCnameRm(s, args[1:])
 	case "help":
 		return cmdShareHelp(s)
 	default:
@@ -1018,6 +1070,11 @@ func cmdShareHelp(s *Shell) error {
 	s.writeln("    share set-public <vm>        make HTTPS endpoint public")
 	s.writeln("    share set-private <vm>       make HTTPS endpoint private")
 	s.writeln("    share list <vm>              list shares for a VM")
+	s.writeln("")
+	s.writeln("  \033[1mcustom domains\033[0m")
+	s.writeln("    share cname <vm> <domain>         add a custom domain")
+	s.writeln("    share cname-verify <vm> <domain>  verify DNS ownership")
+	s.writeln("    share cname-rm <vm> <domain>      remove a custom domain")
 	s.writeln("")
 	return nil
 }
@@ -1242,5 +1299,437 @@ func cmdShareList(s *Shell, args []string) error {
 		}
 	}
 	s.writeln("")
+	return nil
+}
+
+// ── share cname ──────────────────────────────────────────────────────
+
+// cmdShareCname adds a custom domain mapping for a VM.
+// Usage: share cname <vm> <domain>
+//
+// This creates a DNS verification challenge. The user must add a TXT record
+// at _ussycode-verify.<domain> with the provided token, then run
+// `share cname-verify <vm> <domain>` to complete verification.
+func cmdShareCname(s *Shell, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: share cname <vm> <domain>")
+	}
+
+	ctx := context.Background()
+	vmName := args[0]
+	domain := strings.ToLower(strings.TrimSpace(args[1]))
+
+	// Basic domain validation
+	if !isValidDomain(domain) {
+		return fmt.Errorf("invalid domain %q", domain)
+	}
+
+	// Look up the VM
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, vmName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", vmName)
+		}
+		return fmt.Errorf("lookup vm: %w", err)
+	}
+
+	// Check if domain is already registered
+	existing, err := s.gw.DB.GetCustomDomain(ctx, domain)
+	if err == nil && existing != nil {
+		if existing.VMID == vmRecord.ID {
+			if existing.Verified {
+				return fmt.Errorf("domain %s is already verified for %s", domain, vmName)
+			}
+			s.writeln("")
+			s.writef("  domain %s is already pending verification for %s.\n", domain, vmName)
+			s.writeln("  add this DNS TXT record to verify:")
+			s.writeln("")
+			s.writef("    _ussycode-verify.%s  TXT  %s\n", domain, existing.VerificationToken.String)
+			s.writeln("")
+			s.writeln("  then run: share cname-verify " + vmName + " " + domain)
+			s.writeln("")
+			return nil
+		}
+		return fmt.Errorf("domain %s is already registered to another VM", domain)
+	}
+
+	// Generate a verification token
+	token, err := generateLinkToken()
+	if err != nil {
+		return fmt.Errorf("generate verification token: %w", err)
+	}
+
+	// Store the custom domain record
+	if err := s.gw.DB.CreateCustomDomain(ctx, vmRecord.ID, domain, token); err != nil {
+		return fmt.Errorf("create custom domain: %w", err)
+	}
+
+	s.writeln("")
+	s.writef("  custom domain %s added for %s.\n", domain, vmName)
+	s.writeln("")
+	s.writeln("  to verify ownership, add this DNS TXT record:")
+	s.writeln("")
+	s.writef("    _ussycode-verify.%s  TXT  %s\n", domain, token)
+	s.writeln("")
+	s.writeln("  also add a CNAME record pointing to your VM:")
+	s.writeln("")
+	s.writef("    %s  CNAME  %s.%s\n", domain, vmName, s.gw.domain)
+	s.writeln("")
+	s.writef("  then run: share cname-verify %s %s\n", vmName, domain)
+	s.writeln("")
+	return nil
+}
+
+// cmdShareCnameVerify verifies DNS ownership of a custom domain by
+// looking up the TXT record at _ussycode-verify.<domain>.
+func cmdShareCnameVerify(s *Shell, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: share cname-verify <vm> <domain>")
+	}
+
+	ctx := context.Background()
+	vmName := args[0]
+	domain := strings.ToLower(strings.TrimSpace(args[1]))
+
+	// Look up the VM
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, vmName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", vmName)
+		}
+		return fmt.Errorf("lookup vm: %w", err)
+	}
+
+	// Look up the custom domain record
+	cd, err := s.gw.DB.GetCustomDomain(ctx, domain)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no custom domain %q found. add it with: share cname %s %s", domain, vmName, domain)
+		}
+		return fmt.Errorf("lookup custom domain: %w", err)
+	}
+
+	if cd.VMID != vmRecord.ID {
+		return fmt.Errorf("domain %s is not associated with %s", domain, vmName)
+	}
+
+	if cd.Verified {
+		s.writef("  domain %s is already verified.\n", domain)
+		return nil
+	}
+
+	// Look up DNS TXT records for _ussycode-verify.<domain>
+	verifyHost := "_ussycode-verify." + domain
+	expectedToken := cd.VerificationToken.String
+
+	s.writef("  checking DNS TXT record at %s...\n", verifyHost)
+
+	txtRecords, err := net.LookupTXT(verifyHost)
+	if err != nil {
+		return fmt.Errorf("DNS lookup failed for %s: %w\n  make sure you added the TXT record and DNS has propagated", verifyHost, err)
+	}
+
+	// Check if any TXT record matches the expected token
+	found := false
+	for _, txt := range txtRecords {
+		if strings.TrimSpace(txt) == expectedToken {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		s.writeln("")
+		s.writef("  verification failed: no matching TXT record found at %s\n", verifyHost)
+		s.writeln("")
+		s.writeln("  expected TXT value:")
+		s.writef("    %s\n", expectedToken)
+		s.writeln("")
+		s.writeln("  found:")
+		for _, txt := range txtRecords {
+			s.writef("    %s\n", txt)
+		}
+		if len(txtRecords) == 0 {
+			s.writeln("    (none)")
+		}
+		s.writeln("")
+		s.writeln("  DNS changes can take up to 48 hours to propagate. try again later.")
+		s.writeln("")
+		return nil
+	}
+
+	// Mark as verified in DB
+	if err := s.gw.DB.VerifyCustomDomain(ctx, domain); err != nil {
+		return fmt.Errorf("verify custom domain: %w", err)
+	}
+
+	// Add the custom domain route to the proxy if VM is running
+	if s.gw.Proxy != nil && vmRecord.Status == "running" {
+		if err := s.gw.Proxy.AddCustomDomain(ctx, domain, vmName); err != nil {
+			s.gw.Proxy.Logger().Warn("failed to add custom domain proxy route",
+				"domain", domain, "vm", vmName, "error", err)
+			s.writef("  warning: proxy route creation failed (domain verified but routing may not work yet)\n")
+		}
+	}
+
+	s.writeln("")
+	s.writef("  domain %s verified and active for %s!\n", domain, vmName)
+	s.writef("  https://%s is now live.\n", domain)
+	s.writeln("")
+	return nil
+}
+
+// cmdShareCnameRm removes a custom domain mapping from a VM.
+func cmdShareCnameRm(s *Shell, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: share cname-rm <vm> <domain>")
+	}
+
+	ctx := context.Background()
+	vmName := args[0]
+	domain := strings.ToLower(strings.TrimSpace(args[1]))
+
+	// Look up the VM
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, vmName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", vmName)
+		}
+		return fmt.Errorf("lookup vm: %w", err)
+	}
+
+	// Look up the custom domain record
+	cd, err := s.gw.DB.GetCustomDomain(ctx, domain)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no custom domain %q found for %s", domain, vmName)
+		}
+		return fmt.Errorf("lookup custom domain: %w", err)
+	}
+
+	if cd.VMID != vmRecord.ID {
+		return fmt.Errorf("domain %s is not associated with %s", domain, vmName)
+	}
+
+	// Remove proxy route if it was verified
+	if cd.Verified && s.gw.Proxy != nil {
+		if err := s.gw.Proxy.RemoveCustomDomain(ctx, domain); err != nil {
+			s.gw.Proxy.Logger().Warn("failed to remove custom domain proxy route",
+				"domain", domain, "error", err)
+		}
+	}
+
+	// Delete from DB
+	if err := s.gw.DB.DeleteCustomDomain(ctx, domain); err != nil {
+		return fmt.Errorf("delete custom domain: %w", err)
+	}
+
+	s.writef("  removed custom domain %s from %s.\n", domain, vmName)
+	return nil
+}
+
+// isValidDomain performs basic validation on a domain name.
+func isValidDomain(domain string) bool {
+	if len(domain) < 3 || len(domain) > 253 {
+		return false
+	}
+	// Must contain at least one dot (not a bare hostname)
+	if !strings.Contains(domain, ".") {
+		return false
+	}
+	// Must not start or end with a dot or hyphen
+	if strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") ||
+		strings.HasPrefix(domain, "-") || strings.HasSuffix(domain, "-") {
+		return false
+	}
+	// Check each label
+	labels := strings.Split(domain, ".")
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+		for _, c := range label {
+			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// ── llm-key ──────────────────────────────────────────────────────────
+
+func cmdLLMKey(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return cmdLLMKeyHelp(s)
+	}
+
+	switch args[0] {
+	case "set":
+		return cmdLLMKeySet(s, args[1:])
+	case "list", "ls":
+		return cmdLLMKeyList(s, args[1:])
+	case "remove", "rm":
+		return cmdLLMKeyRemove(s, args[1:])
+	case "help":
+		return cmdLLMKeyHelp(s)
+	default:
+		return fmt.Errorf("unknown llm-key subcommand %q. try: llm-key help", args[0])
+	}
+}
+
+func cmdLLMKeyHelp(s *Shell) error {
+	s.writeln("")
+	s.writeln("  \033[1mllm-key\033[0m -- manage your LLM API keys")
+	s.writeln("")
+	s.writeln("    llm-key set <provider> <key>   store an API key")
+	s.writeln("    llm-key list                   show configured providers")
+	s.writeln("    llm-key rm <provider>          remove an API key")
+	s.writeln("")
+	s.writeln("  supported providers: anthropic, openai, fireworks")
+	s.writeln("  self-hosted (ollama, vllm) don't need keys.")
+	s.writeln("")
+	return nil
+}
+
+func cmdLLMKeySet(s *Shell, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: llm-key set <provider> <key>")
+	}
+
+	ctx := context.Background()
+	provider := strings.ToLower(args[0])
+	key := args[1]
+
+	// Validate provider is a known BYOK provider
+	validProviders := map[string]bool{
+		"anthropic": true,
+		"openai":    true,
+		"fireworks": true,
+	}
+	if !validProviders[provider] {
+		return fmt.Errorf("unknown BYOK provider %q. Supported: anthropic, openai, fireworks", provider)
+	}
+
+	if key == "" {
+		return fmt.Errorf("API key must not be empty")
+	}
+
+	// Use the LLM gateway to encrypt and store
+	if s.gw.LLMGateway == nil {
+		return fmt.Errorf("LLM gateway not configured on this server")
+	}
+
+	if err := s.gw.LLMGateway.SetUserKey(ctx, s.user.ID, provider, key); err != nil {
+		return fmt.Errorf("store key: %w", err)
+	}
+
+	s.writef("  API key for %s stored successfully.\n", provider)
+	s.writef("  Your VMs can now use /gateway/llm/%s\n", provider)
+	return nil
+}
+
+func cmdLLMKeyList(s *Shell, args []string) error {
+	ctx := context.Background()
+
+	providers, err := s.gw.DB.LLMKeyProvidersByUser(ctx, s.user.ID)
+	if err != nil {
+		return fmt.Errorf("list keys: %w", err)
+	}
+
+	if len(providers) == 0 {
+		s.writeln("  no LLM API keys configured.")
+		s.writeln("  use 'llm-key set <provider> <key>' to add one.")
+		return nil
+	}
+
+	s.writeln("")
+	s.writeln("  configured LLM providers:")
+	s.writeln("")
+	for _, p := range providers {
+		s.writef("    - %s\n", p)
+	}
+	s.writeln("")
+	s.writeln("  (keys are stored encrypted; use 'llm-key rm <provider>' to remove)")
+	s.writeln("")
+	return nil
+}
+
+func cmdLLMKeyRemove(s *Shell, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: llm-key rm <provider>")
+	}
+
+	ctx := context.Background()
+	provider := strings.ToLower(args[0])
+
+	if err := s.gw.DB.DeleteLLMKey(ctx, s.user.ID, provider); err != nil {
+		return fmt.Errorf("remove key: %w", err)
+	}
+
+	s.writef("  removed API key for %s.\n", provider)
+	return nil
+}
+
+// ── admin ────────────────────────────────────────────────────────────
+
+func cmdAdmin(s *Shell, args []string) error {
+	// Gate: only admin-level users can use admin commands
+	if s.user.TrustLevel != "admin" {
+		return fmt.Errorf("permission denied: admin commands require admin trust level")
+	}
+
+	if len(args) == 0 {
+		return cmdAdminHelp(s)
+	}
+
+	switch args[0] {
+	case "set-trust":
+		return cmdAdminSetTrust(s, args[1:])
+	case "help":
+		return cmdAdminHelp(s)
+	default:
+		return fmt.Errorf("unknown admin subcommand %q. try: admin help", args[0])
+	}
+}
+
+func cmdAdminHelp(s *Shell) error {
+	s.writeln("")
+	s.writeln("  \033[1madmin\033[0m -- admin-only commands")
+	s.writeln("")
+	s.writeln("    admin set-trust <handle> <level>   set user trust level")
+	s.writeln("")
+	s.writeln("  trust levels: newbie, citizen, operator, admin")
+	s.writeln("")
+	return nil
+}
+
+func cmdAdminSetTrust(s *Shell, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: admin set-trust <handle> <level>")
+	}
+
+	ctx := context.Background()
+	handle := args[0]
+	level := strings.ToLower(args[1])
+
+	if !db.IsValidTrustLevel(level) {
+		return fmt.Errorf("invalid trust level %q. valid levels: newbie, citizen, operator, admin", level)
+	}
+
+	targetUser, err := s.gw.DB.UserByHandle(ctx, handle)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no user named %q", handle)
+		}
+		return fmt.Errorf("lookup user: %w", err)
+	}
+
+	oldLevel := targetUser.TrustLevel
+	if err := s.gw.DB.SetUserTrustLevel(ctx, targetUser.ID, level); err != nil {
+		return fmt.Errorf("set trust level: %w", err)
+	}
+
+	s.writef("  %s: %s -> %s\n", handle, oldLevel, level)
 	return nil
 }

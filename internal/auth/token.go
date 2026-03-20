@@ -1,5 +1,5 @@
 // Package auth implements SSH key-based authentication and
-// stateless token signing/verification for exedevussy.
+// stateless token signing/verification for ussycode.
 //
 // Tokens use the format: base64url(JSON_payload).base64url(ssh_wire_signature)
 // Signed with SSH private keys, verified with SSH public keys.

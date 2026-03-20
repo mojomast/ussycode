@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	gssh "github.com/gliderlabs/ssh"
-	"github.com/mojomast/exedevussy/internal/db"
+	"github.com/mojomast/ussycode/internal/db"
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )

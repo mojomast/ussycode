@@ -1,0 +1,4 @@
+---
+# roles/firecracker/handlers/main.yml
+- name: reload udev
+  ansible.builtin.command: udevadm control --reload-rules && udevadm trigger

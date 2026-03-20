@@ -1,13 +1,15 @@
 package config
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 )
 
-// Config holds all configuration for the exedevussy platform.
+// Config holds all configuration for the ussycode platform.
+// Values are resolved in priority order: CLI flags > environment variables > defaults.
 type Config struct {
 	// Domain is the base domain for VM subdomains (e.g., "ussy.host")
 	Domain string
@@ -29,6 +31,12 @@ type Config struct {
 
 	// CaddyAdminAddr is the Caddy admin API address
 	CaddyAdminAddr string
+
+	// MetadataAddr is the address the metadata service listens on (169.254.169.254:80)
+	MetadataAddr string
+
+	// AuthProxyAddr is the address the auth proxy listens on (for Caddy forward_auth)
+	AuthProxyAddr string
 
 	// VMM is the hypervisor backend: "firecracker" or "cloudhv"
 	VMM string
@@ -74,44 +82,113 @@ type Config struct {
 
 	// Debug enables debug logging
 	Debug bool
+
+	// FirecrackerBin is the path to the firecracker binary
+	FirecrackerBin string
+
+	// AdminListenAddr is the address the admin web panel listens on
+	AdminListenAddr string
+
+	// LLMEncryptSecret is the secret for encrypting stored LLM API keys
+	LLMEncryptSecret string
+
+	// SMTPListenAddr is the address the inbound SMTP server listens on
+	SMTPListenAddr string
+
+	// SMTPRelay is the address of the outbound SMTP relay (host:port)
+	SMTPRelay string
+
+	// SMTPFromAddress is the From: address for outbound emails
+	SMTPFromAddress string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
+// Environment variables are checked first; if unset, hardcoded defaults are used.
 func DefaultConfig() *Config {
-	dataDir := envOrDefault("EXEDEVUSSY_DATA_DIR", "/var/lib/exedevussy")
+	dataDir := envOrDefault("USSYCODE_DATA_DIR", "/var/lib/ussycode")
 	return &Config{
-		Domain:          envOrDefault("EXEDEVUSSY_DOMAIN", "ussy.host"),
-		SSHListenAddr:   envOrDefault("EXEDEVUSSY_SSH_ADDR", ":22"),
-		SSHHostKeyPath:  envOrDefault("EXEDEVUSSY_SSH_HOST_KEY", filepath.Join(dataDir, "ssh_host_ed25519_key")),
-		HTTPListenAddr:  envOrDefault("EXEDEVUSSY_HTTP_ADDR", ":8080"),
-		DataDir:         dataDir,
-		DBPath:          envOrDefault("EXEDEVUSSY_DB_PATH", filepath.Join(dataDir, "exedevussy.db")),
-		CaddyAdminAddr:  envOrDefault("EXEDEVUSSY_CADDY_ADMIN", "http://localhost:2019"),
-		VMM:             envOrDefault("EXEDEVUSSY_VMM", "firecracker"),
-		KernelPath:      envOrDefault("EXEDEVUSSY_KERNEL", "/var/lib/exedevussy/vmlinux"),
-		DefaultImage:    envOrDefault("EXEDEVUSSY_DEFAULT_IMAGE", "ussyuntu"),
-		StorageBackend:  envOrDefault("EXEDEVUSSY_STORAGE", "lvm"),
-		StoragePool:     envOrDefault("EXEDEVUSSY_STORAGE_POOL", "exedevussy"),
-		NetworkBridge:   envOrDefault("EXEDEVUSSY_BRIDGE", "ussy0"),
-		NetworkSubnet:   envOrDefault("EXEDEVUSSY_SUBNET", "10.0.0.0/24"),
-		MaxVMsPerUser:   envOrDefaultInt("EXEDEVUSSY_MAX_VMS", 5),
-		DefaultCPU:      envOrDefaultInt("EXEDEVUSSY_DEFAULT_CPU", 1),
-		DefaultMemoryMB: envOrDefaultInt("EXEDEVUSSY_DEFAULT_MEM", 512),
-		DefaultDiskGB:   envOrDefaultInt("EXEDEVUSSY_DEFAULT_DISK", 5),
-		TLSEmail:        envOrDefault("EXEDEVUSSY_TLS_EMAIL", ""),
-		DNSProvider:     envOrDefault("EXEDEVUSSY_DNS_PROVIDER", "cloudflare"),
-		DNSAPIToken:     envOrDefault("EXEDEVUSSY_DNS_API_TOKEN", ""),
-		Debug:           envOrDefault("EXEDEVUSSY_DEBUG", "") != "",
+		Domain:           envOrDefault("USSYCODE_DOMAIN", "ussy.host"),
+		SSHListenAddr:    envOrDefault("USSYCODE_SSH_ADDR", ":2222"),
+		SSHHostKeyPath:   envOrDefault("USSYCODE_SSH_HOST_KEY", filepath.Join(dataDir, "ssh_host_ed25519_key")),
+		HTTPListenAddr:   envOrDefault("USSYCODE_HTTP_ADDR", ":8080"),
+		DataDir:          dataDir,
+		DBPath:           envOrDefault("USSYCODE_DB_PATH", filepath.Join(dataDir, "ussycode.db")),
+		CaddyAdminAddr:   envOrDefault("USSYCODE_CADDY_ADMIN", "http://localhost:2019"),
+		MetadataAddr:     envOrDefault("USSYCODE_METADATA_ADDR", "169.254.169.254:80"),
+		AuthProxyAddr:    envOrDefault("USSYCODE_AUTH_PROXY_ADDR", ":9876"),
+		VMM:              envOrDefault("USSYCODE_VMM", "firecracker"),
+		KernelPath:       envOrDefault("USSYCODE_KERNEL", filepath.Join(dataDir, "vmlinux")),
+		DefaultImage:     envOrDefault("USSYCODE_DEFAULT_IMAGE", "ussyuntu"),
+		StorageBackend:   envOrDefault("USSYCODE_STORAGE", "lvm"),
+		StoragePool:      envOrDefault("USSYCODE_STORAGE_POOL", "ussycode"),
+		NetworkBridge:    envOrDefault("USSYCODE_BRIDGE", "ussy0"),
+		NetworkSubnet:    envOrDefault("USSYCODE_SUBNET", "10.0.0.0/24"),
+		MaxVMsPerUser:    envOrDefaultInt("USSYCODE_MAX_VMS", 5),
+		DefaultCPU:       envOrDefaultInt("USSYCODE_DEFAULT_CPU", 1),
+		DefaultMemoryMB:  envOrDefaultInt("USSYCODE_DEFAULT_MEM", 512),
+		DefaultDiskGB:    envOrDefaultInt("USSYCODE_DEFAULT_DISK", 5),
+		TLSEmail:         envOrDefault("USSYCODE_TLS_EMAIL", ""),
+		DNSProvider:      envOrDefault("USSYCODE_DNS_PROVIDER", "cloudflare"),
+		DNSAPIToken:      envOrDefault("USSYCODE_DNS_API_TOKEN", ""),
+		Debug:            envOrDefault("USSYCODE_DEBUG", "") != "",
+		FirecrackerBin:   envOrDefault("USSYCODE_FIRECRACKER_BIN", "firecracker"),
+		AdminListenAddr:  envOrDefault("USSYCODE_ADMIN_ADDR", ":9090"),
+		LLMEncryptSecret: envOrDefault("USSYCODE_LLM_ENCRYPT_SECRET", ""),
+		SMTPListenAddr:   envOrDefault("USSYCODE_SMTP_ADDR", ":2525"),
+		SMTPRelay:        envOrDefault("USSYCODE_SMTP_RELAY", "localhost:25"),
+		SMTPFromAddress:  envOrDefault("USSYCODE_SMTP_FROM", "noreply@ussy.host"),
 	}
 }
 
-// Validate checks that required configuration is present.
+// RegisterFlags registers CLI flags that override the config values.
+// Call flag.Parse() after this to apply flag overrides.
+// Precedence: CLI flag (if set) > env var > hardcoded default.
+func (c *Config) RegisterFlags(fs *flag.FlagSet) {
+	fs.StringVar(&c.Domain, "domain", c.Domain, "Base domain for VM subdomains")
+	fs.StringVar(&c.SSHListenAddr, "addr", c.SSHListenAddr, "SSH gateway listen address")
+	fs.StringVar(&c.SSHHostKeyPath, "host-key", c.SSHHostKeyPath, "SSH host key file path")
+	fs.StringVar(&c.HTTPListenAddr, "http-addr", c.HTTPListenAddr, "HTTP API listen address")
+	fs.StringVar(&c.DataDir, "data-dir", c.DataDir, "Root data directory for VM runtime files")
+	fs.StringVar(&c.DBPath, "db", c.DBPath, "SQLite database path")
+	fs.StringVar(&c.CaddyAdminAddr, "caddy-api", c.CaddyAdminAddr, "Caddy admin API URL")
+	fs.StringVar(&c.MetadataAddr, "metadata-addr", c.MetadataAddr, "Metadata service listen address")
+	fs.StringVar(&c.AuthProxyAddr, "auth-proxy-addr", c.AuthProxyAddr, "Auth proxy listen address (for Caddy forward_auth)")
+	fs.StringVar(&c.VMM, "vmm", c.VMM, "Hypervisor backend: firecracker or cloudhv")
+	fs.StringVar(&c.KernelPath, "kernel", c.KernelPath, "Path to guest kernel")
+	fs.StringVar(&c.FirecrackerBin, "firecracker", c.FirecrackerBin, "Path to firecracker binary")
+	fs.StringVar(&c.DefaultImage, "default-image", c.DefaultImage, "Default container image for new VMs")
+	fs.StringVar(&c.StorageBackend, "storage", c.StorageBackend, "Storage backend: lvm or zfs")
+	fs.StringVar(&c.StoragePool, "storage-pool", c.StoragePool, "LVM VG or ZFS pool name")
+	fs.StringVar(&c.NetworkBridge, "bridge", c.NetworkBridge, "Bridge interface for VM networking")
+	fs.StringVar(&c.NetworkSubnet, "subnet", c.NetworkSubnet, "CIDR subnet for VM IPs")
+	fs.IntVar(&c.MaxVMsPerUser, "max-vms", c.MaxVMsPerUser, "Max VMs per user")
+	fs.IntVar(&c.DefaultCPU, "default-cpu", c.DefaultCPU, "Default vCPU count per VM")
+	fs.IntVar(&c.DefaultMemoryMB, "default-mem", c.DefaultMemoryMB, "Default memory in MB per VM")
+	fs.IntVar(&c.DefaultDiskGB, "default-disk", c.DefaultDiskGB, "Default disk size in GB per VM")
+	fs.StringVar(&c.TLSEmail, "acme-email", c.TLSEmail, "ACME email for TLS certificates")
+	fs.StringVar(&c.DNSProvider, "dns-provider", c.DNSProvider, "DNS provider for wildcard cert challenges")
+	fs.StringVar(&c.DNSAPIToken, "dns-api-token", c.DNSAPIToken, "DNS provider API token")
+	fs.BoolVar(&c.Debug, "debug", c.Debug, "Enable debug logging")
+	fs.StringVar(&c.AdminListenAddr, "admin-addr", c.AdminListenAddr, "Admin web panel listen address")
+	fs.StringVar(&c.LLMEncryptSecret, "llm-encrypt-secret", c.LLMEncryptSecret, "Secret for encrypting stored LLM API keys")
+	fs.StringVar(&c.SMTPListenAddr, "smtp-addr", c.SMTPListenAddr, "Inbound SMTP server listen address")
+	fs.StringVar(&c.SMTPRelay, "smtp-relay", c.SMTPRelay, "Outbound SMTP relay address (host:port)")
+	fs.StringVar(&c.SMTPFromAddress, "smtp-from", c.SMTPFromAddress, "From: address for outbound emails")
+}
+
+// Validate checks that required configuration is present and consistent.
 func (c *Config) Validate() error {
 	if c.Domain == "" {
-		return fmt.Errorf("domain is required")
+		return fmt.Errorf("config: domain is required (set USSYCODE_DOMAIN or -domain)")
 	}
 	if c.DataDir == "" {
-		return fmt.Errorf("data directory is required")
+		return fmt.Errorf("config: data directory is required (set USSYCODE_DATA_DIR or -data-dir)")
+	}
+	if c.SSHListenAddr == "" {
+		return fmt.Errorf("config: SSH listen address is required (set USSYCODE_SSH_ADDR or -addr)")
+	}
+	if c.DBPath == "" {
+		return fmt.Errorf("config: database path is required (set USSYCODE_DB_PATH or -db)")
 	}
 	return nil
 }

@@ -1,0 +1,20 @@
+# Prometheus scrape targets for ussycode — managed by Ansible
+#
+# Import this file into your prometheus.yml with:
+#   scrape_configs:
+#     - job_name: 'ussycode'
+#       file_sd_configs:
+#         - files:
+#           - '/etc/prometheus/ussycode-targets.yml'
+
+- targets:
+    - "localhost:{{ ussycode_metrics_port }}"
+  labels:
+    job: ussycode
+    instance: "{{ inventory_hostname }}"
+
+- targets:
+    - "localhost:9100"
+  labels:
+    job: node_exporter
+    instance: "{{ inventory_hostname }}"

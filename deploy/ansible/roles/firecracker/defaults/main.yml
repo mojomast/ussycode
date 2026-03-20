@@ -1,0 +1,8 @@
+---
+# roles/firecracker/defaults/main.yml — Default variables for Firecracker role
+firecracker_version: "1.7.0"
+firecracker_arch: "x86_64"
+firecracker_install_dir: /usr/local/bin
+firecracker_jailer_dir: /srv/jailer
+firecracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/ci-artifacts/kernels/vmlinux-5.10.217"
+firecracker_kernel_path: /var/lib/ussycode/vmlinux

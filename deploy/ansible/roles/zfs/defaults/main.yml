@@ -1,0 +1,10 @@
+---
+# roles/zfs/defaults/main.yml — Default variables for ZFS role
+ussycode_zfs_pool: vmpool
+ussycode_zfs_device: /dev/sdb
+ussycode_zfs_compression: lz4
+ussycode_zfs_atime: "off"
+ussycode_zfs_datasets:
+  - "{{ ussycode_zfs_pool }}/vms"
+  - "{{ ussycode_zfs_pool }}/images"
+  - "{{ ussycode_zfs_pool }}/users"

@@ -1,0 +1,101 @@
+{{define "user_detail.html"}}
+{{template "layout_head" .}}
+
+<div class="page-header">
+    <h1>User: {{.User.Handle}}</h1>
+    <p class="subtitle">
+        <span class="badge {{trustBadge .User.TrustLevel}}">{{.User.TrustLevel}}</span>
+        &middot; ID {{.User.ID}}
+    </p>
+</div>
+
+{{if .Success}}
+<div class="alert alert-success">{{.Success}}</div>
+{{end}}
+{{if .Error}}
+<div class="alert alert-error">{{.Error}}</div>
+{{end}}
+
+<dl class="detail-grid">
+    <dt>Handle</dt>
+    <dd>{{.User.Handle}}</dd>
+    <dt>Trust Level</dt>
+    <dd><span class="badge {{trustBadge .User.TrustLevel}}">{{.User.TrustLevel}}</span></dd>
+    <dt>Created</dt>
+    <dd>{{timeAgo .User.CreatedAt}}</dd>
+    <dt>Updated</dt>
+    <dd>{{timeAgo .User.UpdatedAt}}</dd>
+</dl>
+
+<h2 class="section-header">Set Trust Level</h2>
+<form method="POST" action="/admin/users/{{.User.ID}}/trust" class="inline-form" style="margin-bottom: 2rem;">
+    <select name="trust_level">
+        {{range .TrustLevels}}
+        <option value="{{.}}" {{if eq . $.User.TrustLevel}}selected{{end}}>{{.}}</option>
+        {{end}}
+    </select>
+    <button type="submit" class="btn btn-primary btn-sm">Update</button>
+</form>
+
+<h2 class="section-header">SSH Keys ({{len .Keys}})</h2>
+{{if .Keys}}
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Fingerprint</th>
+                <th>Comment</th>
+                <th>Added</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Keys}}
+            <tr>
+                <td class="mono">{{.ID}}</td>
+                <td class="mono">{{truncate .Fingerprint 32}}</td>
+                <td>{{if .Comment}}{{.Comment}}{{else}}<span style="color: var(--text-muted);">—</span>{{end}}</td>
+                <td>{{timeAgo .CreatedAt}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{else}}
+<p style="color: var(--text-muted); margin-bottom: 1.5rem;">No SSH keys registered.</p>
+{{end}}
+
+<h2 class="section-header">VMs ({{len .VMs}})</h2>
+{{if .VMs}}
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Image</th>
+                <th>Resources</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .VMs}}
+            <tr>
+                <td class="mono">{{.ID}}</td>
+                <td><a href="/admin/vms/{{.ID}}">{{.Name}}</a></td>
+                <td><span class="badge {{statusBadge .Status}}">{{.Status}}</span></td>
+                <td>{{.Image}}</td>
+                <td class="mono">{{.VCPU}}c / {{.MemoryMB}}MB / {{.DiskGB}}GB</td>
+                <td>{{timeAgo .CreatedAt}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{else}}
+<p style="color: var(--text-muted);">No VMs created.</p>
+{{end}}
+
+{{template "layout_foot" .}}
+{{end}}

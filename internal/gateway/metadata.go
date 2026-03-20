@@ -37,11 +37,13 @@ type LLMConfig struct {
 
 // Server is the metadata HTTP server that VMs query at 169.254.169.254.
 type Server struct {
-	mu         sync.RWMutex
-	vms        map[string]*VMMetadata // source IP -> metadata
-	llm        map[string]*LLMConfig  // provider name -> config
-	listenAddr string
-	logger     *slog.Logger
+	mu          sync.RWMutex
+	vms         map[string]*VMMetadata // source IP -> metadata
+	llm         map[string]*LLMConfig  // provider name -> config
+	llmGateway  LLMGateway             // real LLM proxy (nil = stub mode)
+	emailSender *EmailSender           // outbound email sender (nil = stub mode)
+	listenAddr  string
+	logger      *slog.Logger
 }
 
 // NewServer creates a new metadata server.
@@ -79,6 +81,22 @@ func (s *Server) AddLLMProvider(name string, cfg *LLMConfig) {
 	s.llm[name] = cfg
 }
 
+// SetLLMGateway sets the real LLM gateway proxy implementation.
+// When set, LLM proxy requests are forwarded through it instead of the stub.
+func (s *Server) SetLLMGateway(gw LLMGateway) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.llmGateway = gw
+}
+
+// SetEmailSender sets the outbound email sender.
+// When set, email send requests are handled by it instead of the stub.
+func (s *Server) SetEmailSender(sender *EmailSender) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emailSender = sender
+}
+
 // metadataForRequest resolves the calling VM's metadata from its source IP.
 func (s *Server) metadataForRequest(r *http.Request) (*VMMetadata, error) {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -105,7 +123,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/metadata/vm", s.handleVMMetadata)
 	mux.HandleFunc("/metadata/user", s.handleUserMetadata)
 
-	// VM boot endpoints (called by init-exedev.sh)
+	// VM boot endpoints (called by init-ussycode.sh)
 	mux.HandleFunc("/ssh-keys", s.handleSSHKeys)
 	mux.HandleFunc("/hostname", s.handleHostname)
 	mux.HandleFunc("/env", s.handleEnv)
@@ -215,7 +233,7 @@ func (s *Server) handleUserMetadata(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSSHKeys returns the user's SSH public keys (one per line, authorized_keys format).
-// Called by init-exedev.sh at VM boot to populate ~/.ssh/authorized_keys.
+// Called by init-ussycode.sh at VM boot to populate ~/.ssh/authorized_keys.
 func (s *Server) handleSSHKeys(w http.ResponseWriter, r *http.Request) {
 	meta, err := s.metadataForRequest(r)
 	if err != nil {
@@ -230,7 +248,7 @@ func (s *Server) handleSSHKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleHostname returns the VM's hostname.
-// Called by init-exedev.sh at VM boot.
+// Called by init-ussycode.sh at VM boot.
 func (s *Server) handleHostname(w http.ResponseWriter, r *http.Request) {
 	meta, err := s.metadataForRequest(r)
 	if err != nil {
@@ -243,7 +261,7 @@ func (s *Server) handleHostname(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEnv returns environment variables as KEY=VALUE lines.
-// Called by init-exedev.sh at VM boot.
+// Called by init-ussycode.sh at VM boot.
 func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
 	meta, err := s.metadataForRequest(r)
 	if err != nil {
@@ -253,9 +271,9 @@ func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain")
 	// Always provide these base env vars
-	fmt.Fprintf(w, "EXEDEV_USER=%s\n", meta.UserHandle)
-	fmt.Fprintf(w, "EXEDEV_VM=%s\n", meta.VMName)
-	fmt.Fprintf(w, "EXEDEV_IMAGE=%s\n", meta.Image)
+	fmt.Fprintf(w, "USSYCODE_USER=%s\n", meta.UserHandle)
+	fmt.Fprintf(w, "USSYCODE_VM=%s\n", meta.VMName)
+	fmt.Fprintf(w, "USSYCODE_IMAGE=%s\n", meta.Image)
 
 	// Custom env vars from metadata
 	for k, v := range meta.EnvVars {
@@ -267,14 +285,33 @@ func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLLMProxy(w http.ResponseWriter, r *http.Request) {
 	meta, err := s.metadataForRequest(r)
 	if err != nil {
+		s.logger.Warn("LLM proxy request from unknown VM", "error", err, "remote", r.RemoteAddr)
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
-	// Extract provider from path: /gateway/llm/{provider}
+	// Extract provider from path: /gateway/llm/{provider}/...
 	path := strings.TrimPrefix(r.URL.Path, "/gateway/llm/")
 	provider := strings.SplitN(path, "/", 2)[0]
 
+	if provider == "" {
+		http.Error(w, "provider required: /gateway/llm/{provider}", http.StatusBadRequest)
+		return
+	}
+
+	// If the real LLM gateway is configured, use it
+	s.mu.RLock()
+	gw := s.llmGateway
+	s.mu.RUnlock()
+
+	if gw != nil {
+		// Inject user ID into request context for the LLM gateway
+		ctx := WithLLMUserID(r.Context(), meta.UserID)
+		gw.Proxy(w, r.WithContext(ctx), provider)
+		return
+	}
+
+	// Fallback: check old-style static config
 	s.mu.RLock()
 	cfg, ok := s.llm[provider]
 	s.mu.RUnlock()
@@ -284,9 +321,8 @@ func (s *Server) handleLLMProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Implement actual reverse proxy to cfg.BaseURL
-	// For now, return a stub response indicating the proxy would forward here
-	s.logger.Info("LLM proxy request",
+	// Stub response when no real gateway is configured
+	s.logger.Info("LLM proxy request (stub mode)",
 		"provider", provider,
 		"vm", meta.VMName,
 		"user", meta.UserHandle,
@@ -314,8 +350,18 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Implement email sending
-	s.logger.Info("email send request",
+	// If the real email sender is configured, use it
+	s.mu.RLock()
+	sender := s.emailSender
+	s.mu.RUnlock()
+
+	if sender != nil {
+		sender.HandleEmailSend(w, r, meta)
+		return
+	}
+
+	// Stub response when no email sender is configured
+	s.logger.Info("email send request (stub mode)",
 		"vm", meta.VMName,
 		"user", meta.UserHandle,
 	)

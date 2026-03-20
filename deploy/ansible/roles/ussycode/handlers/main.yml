@@ -1,0 +1,11 @@
+---
+# roles/ussycode/handlers/main.yml
+- name: restart ussycode
+  ansible.builtin.systemd:
+    name: ussycode
+    state: restarted
+  when: ussycode_binary.stat.exists | default(false)
+
+- name: daemon reload
+  ansible.builtin.systemd:
+    daemon_reload: yes

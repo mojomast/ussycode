@@ -1,10 +1,10 @@
-# exedev user profile
+# ussycode user profile
 # Loaded on login to the dev environment
 
 # Source environment from metadata service
-if [ -f ~/.exedev-env ]; then
+if [ -f ~/.ussycode-env ]; then
     set -a
-    source ~/.exedev-env
+    source ~/.ussycode-env
     set +a
 fi
 

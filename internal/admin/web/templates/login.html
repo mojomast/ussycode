@@ -1,0 +1,29 @@
+{{define "login.html"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ussycode admin - login</title>
+    <link rel="stylesheet" href="/admin/static/style.css">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-card">
+            <h1><span class="logo">ussycode</span> admin</h1>
+            <p>Access the admin panel via magic link from your SSH session.</p>
+
+            {{if .Error}}
+            <div class="alert alert-error">{{.Error}}</div>
+            {{end}}
+
+            <p>In your SSH session, run:</p>
+            <code>$ admin login</code>
+            <p>This generates a one-time link that authenticates you.</p>
+            <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 1rem;">
+                Only users with <span class="badge badge-operator">operator</span> or
+                <span class="badge badge-admin">admin</span> trust level can access this panel.
+            </p>
+        </div>
+    </div>
+</body>
+</html>{{end}}

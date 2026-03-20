@@ -1,0 +1,6 @@
+{
+  "name": "swarmussy",
+  "description": "Multi-agent orchestration framework",
+  "ports": [8080, 8081, 8082],
+  "post_create": "#!/bin/bash\nset -e\nmkdir -p /home/ussycode/swarm\necho 'Swarmussy ready. Multi-agent orchestration framework.'"
+}

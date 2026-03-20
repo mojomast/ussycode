@@ -1,11 +1,13 @@
-module github.com/mojomast/exedevussy
+module github.com/mojomast/ussycode
 
-go 1.25.7
+go 1.24.0
+
+toolchain go1.24.4
 
 require (
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/gliderlabs/ssh v0.3.8
-	github.com/google/go-containerregistry v0.21.3
+	github.com/google/go-containerregistry v0.19.2
 	github.com/pressly/goose/v3 v3.22.1
 	golang.org/x/crypto v0.32.0
 	golang.org/x/term v0.28.0
@@ -62,8 +64,8 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/exp v0.0.0-20240325151524-a685a6edb6d8 // indirect
 	golang.org/x/net v0.28.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	modernc.org/libc v1.61.13 // indirect

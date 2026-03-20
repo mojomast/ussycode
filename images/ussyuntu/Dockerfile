@@ -1,4 +1,4 @@
-# ussyuntu -- base VM image for exedevussy
+# ussyuntu -- base VM image for ussycode
 # Ubuntu-based dev environment with pre-installed tools.
 # Built as an OCI container, then extracted to an ext4 rootfs
 # for Firecracker microVMs.
@@ -54,22 +54,22 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && rm -rf /var/lib/apt/lists/*
 
 # ──────────────────────────────────────────────────────────────────────
-# Create the default user: "exedev" with passwordless sudo
+# Create the default user: "ussycode" with passwordless sudo
 # ──────────────────────────────────────────────────────────────────────
 
-RUN useradd -m -s /bin/bash -G sudo exedev \
-    && echo "exedev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/exedev \
-    && chmod 0440 /etc/sudoers.d/exedev
+RUN useradd -m -s /bin/bash -G sudo ussycode \
+    && echo "ussycode ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ussycode \
+    && chmod 0440 /etc/sudoers.d/ussycode
 
-# Setup exedev user's environment
-RUN mkdir -p /home/exedev/.ssh /home/exedev/projects \
-    && chown -R exedev:exedev /home/exedev
+# Setup ussycode user's environment
+RUN mkdir -p /home/ussycode/.ssh /home/ussycode/projects \
+    && chown -R ussycode:ussycode /home/ussycode
 
-# Go environment for exedev user
-RUN echo 'export GOPATH=/home/exedev/go' >> /home/exedev/.bashrc \
-    && echo 'export PATH=$GOPATH/bin:/usr/local/go/bin:$PATH' >> /home/exedev/.bashrc \
-    && mkdir -p /home/exedev/go/bin \
-    && chown -R exedev:exedev /home/exedev/go
+# Go environment for ussycode user
+RUN echo 'export GOPATH=/home/ussycode/go' >> /home/ussycode/.bashrc \
+    && echo 'export PATH=$GOPATH/bin:/usr/local/go/bin:$PATH' >> /home/ussycode/.bashrc \
+    && mkdir -p /home/ussycode/go/bin \
+    && chown -R ussycode:ussycode /home/ussycode/go
 
 # ──────────────────────────────────────────────────────────────────────
 # SSH server configuration
@@ -99,12 +99,12 @@ RUN systemctl mask \
 RUN systemctl enable ssh.service
 
 # Custom init script that mounts data disk and sets up networking
-COPY init-exedev.sh /usr/local/bin/init-exedev.sh
-RUN chmod +x /usr/local/bin/init-exedev.sh
+COPY init-ussycode.sh /usr/local/bin/init-ussycode.sh
+RUN chmod +x /usr/local/bin/init-ussycode.sh
 
 # Systemd service for our init script
-COPY exedev-init.service /etc/systemd/system/exedev-init.service
-RUN systemctl enable exedev-init.service
+COPY ussycode-init.service /etc/systemd/system/ussycode-init.service
+RUN systemctl enable ussycode-init.service
 
 # ──────────────────────────────────────────────────────────────────────
 # Welcome message
@@ -112,15 +112,15 @@ RUN systemctl enable exedev-init.service
 
 COPY motd /etc/motd
 
-# Default bash profile for exedev
-COPY bash_profile /home/exedev/.bash_profile
-RUN chown exedev:exedev /home/exedev/.bash_profile
+# Default bash profile for ussycode
+COPY bash_profile /home/ussycode/.bash_profile
+RUN chown ussycode:ussycode /home/ussycode/.bash_profile
 
 # ──────────────────────────────────────────────────────────────────────
 # Data disk mount point
 # ──────────────────────────────────────────────────────────────────────
 
-RUN mkdir -p /data && chown exedev:exedev /data
+RUN mkdir -p /data && chown ussycode:ussycode /data
 
 # ──────────────────────────────────────────────────────────────────────
 # Cleanup

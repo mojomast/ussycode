@@ -29,6 +29,9 @@ coverage.html
 *~
 .DS_Store
 
+# Pi local state
+.pi/
+
 # Environment files
 .env
 .env.*

@@ -18,6 +18,10 @@ var validHandle = regexp.MustCompile(`^[a-z][a-z0-9-]{0,18}[a-z0-9]$`)
 
 // handleRegistration guides a new user through handle selection.
 // Returns the created User, or nil if the user cancelled.
+//
+// NOTE: This function is no longer called. Registration now happens
+// exclusively through the Discord bot / routussy integration.
+// Kept for reference in case interactive registration is re-enabled.
 func (g *Gateway) handleRegistration(session gssh.Session) (*db.User, error) {
 	t := term.NewTerminal(session, "")
 

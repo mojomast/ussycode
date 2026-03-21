@@ -10,7 +10,6 @@ import (
 	gssh "github.com/gliderlabs/ssh"
 	"github.com/mojomast/ussycode/internal/db"
 	"github.com/mojomast/ussycode/internal/gateway"
-	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
@@ -159,9 +158,15 @@ func (s *Shell) vmSSHKeys(ctx context.Context) []string {
 			sshKeys = append(sshKeys, k.PublicKey)
 		}
 	}
-	hostPubKey := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(s.gw.hostSigner.PublicKey())))
-	if hostPubKey != "" {
-		sshKeys = append(sshKeys, hostPubKey)
+	// Inject this user's per-user gateway public key (used by proxySSHSession
+	// to SSH from the gateway into the VM). Each user gets their own keypair
+	// so no shared "master key" exists across VMs.
+	if s.gw.VM != nil {
+		if pubKey, err := s.gw.VM.UserPublicKey(s.user.ID); err == nil && pubKey != "" {
+			sshKeys = append(sshKeys, pubKey)
+		} else if err != nil {
+			log.Printf("[vmSSHKeys] failed to get per-user gateway key for user %d: %v", s.user.ID, err)
+		}
 	}
 	return sshKeys
 }

@@ -2,6 +2,9 @@ package vm
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/mojomast/ussycode/internal/db"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 const ussycodeOpencodeConfig = `{
@@ -91,6 +95,7 @@ func NewManager(database *db.DB, cfg *ManagerConfig, logger *slog.Logger) (*Mana
 		filepath.Join(cfg.DataDir, "images"),
 		filepath.Join(cfg.DataDir, "disks"),
 		filepath.Join(cfg.DataDir, "run"),
+		filepath.Join(cfg.DataDir, "keys"),
 	} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("create dir %s: %w", dir, err)
@@ -752,4 +757,69 @@ func createEmptyExt4(ctx context.Context, path string, sizeBytes int64) error {
 	}
 
 	return nil
+}
+
+// EnsureUserKey generates an ed25519 keypair for the given user if one
+// doesn't already exist, and returns the path to the private key file.
+// Keys are stored at $DATA_DIR/keys/user-<id> (private) and
+// $DATA_DIR/keys/user-<id>.pub (public).
+func (m *Manager) EnsureUserKey(userID int64) (string, error) {
+	keyPath := m.UserKeyPath(userID)
+	if _, err := os.Stat(keyPath); err == nil {
+		return keyPath, nil // already exists
+	}
+
+	m.logger.Info("generating per-user gateway key", "user_id", userID)
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", fmt.Errorf("generate ed25519 key for user %d: %w", userID, err)
+	}
+
+	pemBlock, err := gossh.MarshalPrivateKey(privateKey, "")
+	if err != nil {
+		return "", fmt.Errorf("marshal private key for user %d: %w", userID, err)
+	}
+
+	pemData := pem.EncodeToMemory(pemBlock)
+	if err := os.WriteFile(keyPath, pemData, 0600); err != nil {
+		return "", fmt.Errorf("write private key for user %d: %w", userID, err)
+	}
+
+	// Also write the public key for convenience
+	signer, err := gossh.NewSignerFromKey(privateKey)
+	if err != nil {
+		return "", fmt.Errorf("create signer for user %d: %w", userID, err)
+	}
+	pubKeyStr := string(gossh.MarshalAuthorizedKey(signer.PublicKey()))
+	pubPath := keyPath + ".pub"
+	if err := os.WriteFile(pubPath, []byte(pubKeyStr), 0644); err != nil {
+		return "", fmt.Errorf("write public key for user %d: %w", userID, err)
+	}
+
+	m.logger.Info("per-user gateway key generated", "user_id", userID, "path", keyPath)
+	return keyPath, nil
+}
+
+// UserKeyPath returns the path to a user's gateway private key file.
+func (m *Manager) UserKeyPath(userID int64) string {
+	return filepath.Join(m.dataDir, "keys", fmt.Sprintf("user-%d", userID))
+}
+
+// UserPublicKey reads and returns the user's gateway public key in
+// authorized_keys format. Generates the keypair first if it doesn't exist.
+func (m *Manager) UserPublicKey(userID int64) (string, error) {
+	pubPath := m.UserKeyPath(userID) + ".pub"
+
+	// Ensure the key exists
+	if _, err := m.EnsureUserKey(userID); err != nil {
+		return "", err
+	}
+
+	data, err := os.ReadFile(pubPath)
+	if err != nil {
+		return "", fmt.Errorf("read public key for user %d: %w", userID, err)
+	}
+
+	return strings.TrimSpace(string(data)), nil
 }

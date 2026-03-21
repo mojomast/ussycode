@@ -54,7 +54,7 @@ type Gateway struct {
 	domain      string
 
 	// RoutussyURL is the base URL of the Routussy proxy for SSH key validation
-	// and API key lookup. If empty, all SSH keys are accepted (legacy behavior).
+	// and API key lookup. If empty, unknown users are rejected entirely.
 	RoutussyURL string
 
 	// RoutussyInternalKey is the shared secret for authenticating to Routussy
@@ -143,15 +143,10 @@ func (g *Gateway) loadOrGenerateHostKey() (gssh.Signer, error) {
 
 // publicKeyHandler is called for each SSH public key auth attempt.
 //
-// Behavior depends on whether Routussy integration is configured:
-//
-//  1. If RoutussyURL is set and the connection is NOT from a Tailscale IP
-//     (100.x.y.z), the fingerprint is validated against Routussy's authorized
-//     key database. Unknown keys are rejected.
-//
-//  2. If the connection IS from a Tailscale IP, or RoutussyURL is not configured,
-//     all keys are accepted (legacy/internal behavior). Unknown users will see
-//     the registration flow in the session handler.
+// Behavior:
+//   - Known local-DB users are always allowed.
+//   - Unknown users are verified against routussy if RoutussyURL is configured.
+//   - If RoutussyURL is not configured, unknown users are rejected entirely.
 func (g *Gateway) publicKeyHandler(ctx gssh.Context, key gssh.PublicKey) bool {
 	fingerprint := gossh.FingerprintSHA256(key)
 	remoteAddr := ctx.RemoteAddr().String()
@@ -175,34 +170,24 @@ func (g *Gateway) publicKeyHandler(ctx gssh.Context, key gssh.PublicKey) bool {
 	ctx.SetValue(ctxKeyFingerprint, fingerprint)
 	ctx.SetValue(ctxKeyPublicKey, key)
 
-	// If routussy integration is configured, validate non-tailscale connections
-	if g.RoutussyURL != "" && !isTailscaleIP(remoteIP) {
-		if user != nil {
-			// Known local user — allow
-			return true
-		}
-
-		// Unknown user from non-tailscale IP: check with routussy
-		authorized := g.checkRoutussyFingerprint(fingerprint)
-		if !authorized {
-			log.Printf("[auth] REJECTED: fingerprint=%s from non-tailscale IP=%s not in routussy", fingerprint, remoteIP)
-			return false
-		}
-		log.Printf("[auth] routussy authorized fingerprint=%s from IP=%s", fingerprint, remoteIP)
+	// Known local user — always allow
+	if user != nil {
+		return true
 	}
 
-	return true
-}
-
-// isTailscaleIP checks if an IP is in the Tailscale CGNAT range (100.64.0.0/10).
-func isTailscaleIP(ip string) bool {
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
+	// Unknown user: must be authorized by routussy
+	if g.RoutussyURL == "" {
+		log.Printf("[auth] REJECTED: fingerprint=%s no routussy configured, unknown users not allowed", fingerprint)
 		return false
 	}
-	// Tailscale uses 100.64.0.0/10 (CGNAT range)
-	_, tailscaleNet, _ := net.ParseCIDR("100.64.0.0/10")
-	return tailscaleNet.Contains(parsed)
+
+	authorized := g.checkRoutussyFingerprint(fingerprint)
+	if !authorized {
+		log.Printf("[auth] REJECTED: fingerprint=%s from IP=%s not authorized by routussy", fingerprint, remoteIP)
+		return false
+	}
+	log.Printf("[auth] routussy authorized fingerprint=%s from IP=%s", fingerprint, remoteIP)
+	return true
 }
 
 // routussyUserResponse is the response from routussy's /ussycode/user-by-fingerprint endpoint.
@@ -344,21 +329,13 @@ func (g *Gateway) sessionHandler(session gssh.Session) {
 
 	log.Printf("[session] new session: fingerprint=%s, hasUser=%v", fingerprint, user != nil)
 
-	// If no user found, run registration
+	// If no user found, reject — registration is handled externally
 	if user == nil {
-		var err error
-		user, err = g.handleRegistration(session)
-		if err != nil {
-			log.Printf("[session] registration failed: %v", err)
-			fmt.Fprintf(session, "\r\nerror during registration: %v\r\n", err)
-			return
-		}
-		if user == nil {
-			// User cancelled registration
-			fmt.Fprintf(session, "\r\ngoodbye.\r\n")
-			return
-		}
-		log.Printf("[session] registration succeeded: user=%s (id=%d)", user.Handle, user.ID)
+		log.Printf("[session] rejected: no local account for fingerprint=%s", fingerprint)
+		fmt.Fprintf(session, "\r\n  access denied.\r\n")
+		fmt.Fprintf(session, "  register your SSH key at https://discord.gg/ussyverse\r\n")
+		fmt.Fprintf(session, "  then try again.\r\n\r\n")
+		return
 	}
 
 	// Handle non-interactive commands (ssh ussy.host <command>)

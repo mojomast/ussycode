@@ -292,7 +292,7 @@ func cmdSSH(s *Shell, args []string) error {
 	// Proxy the SSH session through to the VM's SSH server.
 	// We dial the VM at port 22 using a host-level key, then pipe
 	// the user's gateway session I/O to the VM SSH session.
-	if err := proxySSHSession(s, vmRecord.IPAddress.String); err != nil {
+	if err := proxySSHSession(s, vmRecord.IPAddress.String, s.user.ID); err != nil {
 		return fmt.Errorf("ssh to %s: %w", name, err)
 	}
 
@@ -303,7 +303,16 @@ func cmdSSH(s *Shell, args []string) error {
 // user's terminal to the VM's shell session, handling window resize.
 // It allocates a local PTY so the inner ssh process has a real tty,
 // and forwards window-change events from the gateway session.
-func proxySSHSession(s *Shell, vmIP string) error {
+func proxySSHSession(s *Shell, vmIP string, userID int64) error {
+	// Use per-user gateway key for VM authentication
+	if s.gw.VM == nil {
+		return fmt.Errorf("VM manager not available")
+	}
+	userKeyPath, err := s.gw.VM.EnsureUserKey(userID)
+	if err != nil {
+		return fmt.Errorf("ensure user gateway key: %w", err)
+	}
+
 	args := []string{
 		"-tt",
 		"-o", "BatchMode=yes",
@@ -312,7 +321,7 @@ func proxySSHSession(s *Shell, vmIP string) error {
 		"-o", "LogLevel=ERROR",
 		"-o", "IdentitiesOnly=yes",
 		"-o", "PreferredAuthentications=publickey",
-		"-i", s.gw.hostKeyPath,
+		"-i", userKeyPath,
 		"ussycode@" + vmIP,
 	}
 	cmd := exec.Command("ssh", args...)

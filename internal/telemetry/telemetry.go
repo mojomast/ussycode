@@ -40,7 +40,10 @@ func Setup(ctx context.Context, serviceName, serviceVersion string, logger *slog
 	setupOnce.Do(func() {
 		endpoint := strings.TrimSpace(os.Getenv("USSYCODE_OTLP_ENDPOINT"))
 		if endpoint == "" {
-			endpoint = "http://localhost:3474"
+			if logger != nil {
+				logger.Info("telemetry disabled (USSYCODE_OTLP_ENDPOINT not set)")
+			}
+			return
 		}
 
 		host, insecure, err := parseEndpoint(endpoint)

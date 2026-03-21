@@ -1,0 +1,9 @@
+---
+- name: reload nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+
+- name: daemon reload
+  ansible.builtin.systemd:
+    daemon_reload: yes

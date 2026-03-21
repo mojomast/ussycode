@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -25,7 +27,8 @@ type VMMetadata struct {
 	Image      string            `json:"image"`
 	UserData   string            `json:"user-data,omitempty"`
 	SSHKeys    []string          `json:"ssh-keys,omitempty"` // authorized_keys lines
-	EnvVars    map[string]string `json:"env,omitempty"`      // environment variables to inject
+	Gateway    string            `json:"gateway,omitempty"`
+	EnvVars    map[string]string `json:"env,omitempty"` // environment variables to inject
 }
 
 // LLMConfig holds configuration for an LLM backend proxy.
@@ -127,6 +130,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/ssh-keys", s.handleSSHKeys)
 	mux.HandleFunc("/hostname", s.handleHostname)
 	mux.HandleFunc("/env", s.handleEnv)
+	mux.HandleFunc("/gateway", s.handleGateway)
 
 	// LLM gateway proxy
 	mux.HandleFunc("/gateway/llm/", s.handleLLMProxy)
@@ -145,6 +149,10 @@ func (s *Server) Handler() http.Handler {
 
 // Start starts the metadata HTTP server. Blocks until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
+	if strings.HasPrefix(s.listenAddr, ":") {
+		return s.startRoutedServer(ctx)
+	}
+
 	srv := &http.Server{
 		Addr:    s.listenAddr,
 		Handler: s.Handler(),
@@ -160,6 +168,50 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("metadata server: %w", err)
 	}
 	return nil
+}
+
+func (s *Server) startRoutedServer(ctx context.Context) error {
+	upstream, err := url.Parse("http://127.0.0.1" + s.listenAddr)
+	if err != nil {
+		return fmt.Errorf("parse metadata upstream: %w", err)
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Scheme = upstream.Scheme
+		r.URL.Host = upstream.Host
+		proxy.ServeHTTP(w, r)
+	})
+
+	routedSrv := &http.Server{Addr: s.listenAddr, Handler: s.Handler()}
+	publicSrv := &http.Server{Addr: "169.254.169.254:80", Handler: proxyHandler}
+
+	go func() {
+		<-ctx.Done()
+		_ = publicSrv.Shutdown(context.Background())
+		_ = routedSrv.Shutdown(context.Background())
+	}()
+
+	errCh := make(chan error, 2)
+	go func() {
+		s.logger.Info("metadata server starting", "addr", routedSrv.Addr)
+		if err := routedSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- fmt.Errorf("metadata server: %w", err)
+		}
+	}()
+	go func() {
+		s.logger.Info("metadata public endpoint starting", "addr", publicSrv.Addr)
+		if err := publicSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- fmt.Errorf("metadata public endpoint: %w", err)
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-errCh:
+		return err
+	}
 }
 
 // handleMetadata serves AWS-style metadata paths.
@@ -279,6 +331,17 @@ func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
 	for k, v := range meta.EnvVars {
 		fmt.Fprintf(w, "%s=%s\n", k, v)
 	}
+}
+
+func (s *Server) handleGateway(w http.ResponseWriter, r *http.Request) {
+	meta, err := s.metadataForRequest(r)
+	if err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(meta.Gateway))
 }
 
 // handleLLMProxy proxies requests to configured LLM backends.

@@ -41,6 +41,7 @@ type Gateway struct {
 	Proxy       *proxy.Manager
 	LLMGateway  gateway.LLMGateway
 	server      *gssh.Server
+	hostSigner  gossh.Signer
 	hostKeyPath string
 	domain      string
 }
@@ -66,6 +67,7 @@ func New(database *db.DB, vmManager *vm.Manager, metaSrv *gateway.Server, proxyM
 	if err != nil {
 		return nil, fmt.Errorf("host key: %w", err)
 	}
+	g.hostSigner = signer
 
 	g.server = &gssh.Server{
 		Addr:             addr,

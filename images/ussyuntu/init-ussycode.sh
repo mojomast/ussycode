@@ -69,6 +69,9 @@ if [ -n "$SSH_KEYS" ]; then
     chmod 700 /home/ussycode/.ssh
     chmod 600 /home/ussycode/.ssh/authorized_keys
     chown -R ussycode:ussycode /home/ussycode/.ssh
+    chown ussycode:ussycode /home/ussycode
+else
+    log "Metadata SSH keys unavailable; leaving existing keys intact"
 fi
 
 # Fetch environment variables

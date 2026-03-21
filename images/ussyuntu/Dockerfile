@@ -40,6 +40,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install OpenCode CLI for in-VM agent workflows
+RUN npm install -g opencode-ai
+
 # Install Go (latest stable)
 ARG GO_VERSION=1.24.4
 RUN curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz | tar -C /usr/local -xzf -
@@ -80,6 +83,10 @@ RUN mkdir -p /run/sshd \
 
 # SSH config: no password auth, allow pubkey, allow root login for host management
 COPY sshd_config /etc/ssh/sshd_config
+
+# Provide the VM launch helper with a shell that can see common modules
+RUN printf '%s\n' '#!/bin/sh' 'modprobe virtio_blk 2>/dev/null || true' 'modprobe virtio_net 2>/dev/null || true' 'modprobe virtio_mmio 2>/dev/null || true' 'exec /usr/local/bin/init-ussycode.sh "$@"' > /usr/local/bin/ussycode-init-wrapper \
+    && chmod +x /usr/local/bin/ussycode-init-wrapper
 
 # ──────────────────────────────────────────────────────────────────────
 # Systemd setup for Firecracker boot

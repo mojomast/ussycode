@@ -8,12 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	mathrand "math/rand"
 	"net"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/mojomast/ussycode/internal/db"
@@ -211,8 +211,19 @@ func cmdNew(s *Shell, args []string) error {
 		return fmt.Errorf("VM limit reached (%d/%d). Upgrade trust level or remove a VM.", vmCount, limits.VMLimit)
 	}
 
-	// Use defaults: 1 vCPU, 512MB RAM, 5GB disk
-	vmRecord, err := s.gw.DB.CreateVM(ctx, s.user.ID, name, image, 1, 512, 5)
+	vcpu := 2
+	memoryMB := 2048
+	if limits.CPULimit > 0 && vcpu > limits.CPULimit {
+		vcpu = limits.CPULimit
+	}
+	if limits.RAMLimit > 0 && memoryMB > limits.RAMLimit {
+		memoryMB = limits.RAMLimit
+	}
+	if memoryMB < 512 {
+		memoryMB = 512
+	}
+
+	vmRecord, err := s.gw.DB.CreateVM(ctx, s.user.ID, name, image, vcpu, memoryMB, 5)
 	if err != nil {
 		return fmt.Errorf("create vm: %w", err)
 	}
@@ -221,7 +232,7 @@ func cmdNew(s *Shell, args []string) error {
 
 	// Provision and start the VM via the manager
 	if s.gw.VM != nil {
-		if err := s.gw.VM.CreateAndStart(ctx, vmRecord.ID, name, image, 1, 512); err != nil {
+		if err := s.gw.VM.CreateAndStart(ctx, vmRecord.ID, name, image, vcpu, memoryMB, s.vmSSHKeys(ctx)); err != nil {
 			// VM creation failed -- update DB status but don't remove the record
 			// so user can see it in `ls` and retry or `rm` it
 			s.writef(" failed!\n")
@@ -290,108 +301,35 @@ func cmdSSH(s *Shell, args []string) error {
 // user's terminal to the VM's shell session, handling window resize.
 func proxySSHSession(s *Shell, vmIP string) error {
 	addr := net.JoinHostPort(vmIP, "22")
+	args := []string{
+		"-tt",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-o", "IdentitiesOnly=yes",
+		"-o", "PreferredAuthentications=publickey",
+		"-i", s.gw.hostKeyPath,
+		"ussycode@" + vmIP,
+	}
+	cmd := exec.Command("ssh", args...)
+	cmd.Stdin = s.session
+	cmd.Stdout = s.session
+	cmd.Stderr = s.session.Stderr()
+	cmd.Env = os.Environ()
+	cmd.Dir = "/"
 
-	// Use a host-level key to authenticate to the VM.
-	// The VM image is pre-configured to trust this key for the "ussycode" user.
-	// For now, use password-less auth (the VM trusts connections from the host bridge).
-	config := &gossh.ClientConfig{
-		User: "ussycode",
-		Auth: []gossh.AuthMethod{
-			// Try no-auth first (VMs may be configured to accept connections from host)
-			gossh.Password(""),
-		},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
-		Timeout:         5 * time.Second,
+	if ptyReq, _, ok := s.session.Pty(); ok && ptyReq.Term != "" {
+		cmd.Env = append(cmd.Env, "TERM="+ptyReq.Term)
 	}
 
-	// Dial the VM SSH server
-	client, err := gossh.Dial("tcp", addr, config)
-	if err != nil {
-		return fmt.Errorf("connect to VM at %s: %w", addr, err)
-	}
-	defer client.Close()
-
-	// Open a session
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("open session: %w", err)
-	}
-	defer session.Close()
-
-	// Request a PTY matching the user's terminal
-	ptyReq, winCh, isPty := s.session.Pty()
-	if isPty {
-		modes := gossh.TerminalModes{
-			gossh.ECHO:          1,
-			gossh.TTY_OP_ISPEED: 14400,
-			gossh.TTY_OP_OSPEED: 14400,
-		}
-		if err := session.RequestPty(ptyReq.Term, ptyReq.Window.Height, ptyReq.Window.Width, modes); err != nil {
-			return fmt.Errorf("request pty: %w", err)
-		}
-
-		// Forward window size changes
-		go func() {
-			for win := range winCh {
-				session.WindowChange(win.Height, win.Width)
-			}
-		}()
-	}
-
-	// Pipe I/O between the gateway session and the VM session
-	vmStdin, err := session.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("stdin pipe: %w", err)
-	}
-	vmStdout, err := session.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-	vmStderr, err := session.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	// Start a shell in the VM
-	if err := session.Shell(); err != nil {
-		return fmt.Errorf("start shell: %w", err)
-	}
-
-	// Copy data in both directions
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	// Gateway -> VM (user input)
-	go func() {
-		defer wg.Done()
-		io.Copy(vmStdin, s.session)
-		vmStdin.Close()
-	}()
-
-	// VM stdout -> Gateway (output)
-	go func() {
-		defer wg.Done()
-		io.Copy(s.session, vmStdout)
-	}()
-
-	// VM stderr -> Gateway (errors)
-	go func() {
-		defer wg.Done()
-		io.Copy(s.session.Stderr(), vmStderr)
-	}()
-
-	// Wait for the VM session to exit
-	err = session.Wait()
-	wg.Wait()
-
-	if err != nil {
-		// Don't treat exit codes as errors to the user
-		if _, ok := err.(*gossh.ExitError); ok {
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			_ = ee
 			return nil
 		}
-		return err
+		return fmt.Errorf("connect to VM at %s: %w", addr, err)
 	}
-
 	return nil
 }
 
@@ -473,7 +411,7 @@ func cmdRestart(s *Shell, args []string) error {
 			}
 		}
 		// Start again
-		if err := s.gw.VM.Start(ctx, vmRecord.ID, name, vmRecord.Image, vmRecord.VCPU, vmRecord.MemoryMB); err != nil {
+		if err := s.gw.VM.Start(ctx, vmRecord.ID, name, vmRecord.Image, vmRecord.VCPU, vmRecord.MemoryMB, s.vmSSHKeys(ctx)); err != nil {
 			s.writef(" start failed!\n")
 			return fmt.Errorf("start vm: %w", err)
 		}
@@ -514,7 +452,7 @@ func cmdStart(s *Shell, args []string) error {
 	s.writef("  starting %s...", name)
 
 	if s.gw.VM != nil {
-		if err := s.gw.VM.Start(ctx, vmRecord.ID, name, vmRecord.Image, vmRecord.VCPU, vmRecord.MemoryMB); err != nil {
+		if err := s.gw.VM.Start(ctx, vmRecord.ID, name, vmRecord.Image, vmRecord.VCPU, vmRecord.MemoryMB, s.vmSSHKeys(ctx)); err != nil {
 			s.writef(" failed!\n")
 			return fmt.Errorf("start vm: %w", err)
 		}

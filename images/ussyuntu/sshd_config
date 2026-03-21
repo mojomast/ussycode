@@ -11,6 +11,7 @@ PasswordAuthentication no
 PermitRootLogin no
 PermitEmptyPasswords no
 ChallengeResponseAuthentication no
+PermitUserEnvironment yes
 
 # Allow the host to inject authorized keys via the metadata service
 # The init script writes keys from the metadata service to authorized_keys
@@ -31,7 +32,7 @@ ClientAliveInterval 30
 ClientAliveCountMax 3
 
 # Banner
-PrintMotd yes
+PrintMotd no
 PrintLastLog no
 
 # Subsystem

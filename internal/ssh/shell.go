@@ -9,6 +9,7 @@ import (
 	gssh "github.com/gliderlabs/ssh"
 	"github.com/mojomast/ussycode/internal/db"
 	"github.com/mojomast/ussycode/internal/gateway"
+	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
@@ -149,6 +150,21 @@ func plural(n int) string {
 	return "s"
 }
 
+func (s *Shell) vmSSHKeys(ctx context.Context) []string {
+	var sshKeys []string
+	keys, err := s.gw.DB.SSHKeysByUser(ctx, s.user.ID)
+	if err == nil {
+		for _, k := range keys {
+			sshKeys = append(sshKeys, k.PublicKey)
+		}
+	}
+	hostPubKey := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(s.gw.hostSigner.PublicKey())))
+	if hostPubKey != "" {
+		sshKeys = append(sshKeys, hostPubKey)
+	}
+	return sshKeys
+}
+
 // registerVMMetadata registers a VM with the metadata service so it can
 // query its own metadata at 169.254.169.254.
 func (s *Shell) registerVMMetadata(ctx context.Context, vmID int64, vmName, image string) {
@@ -162,14 +178,7 @@ func (s *Shell) registerVMMetadata(ctx context.Context, vmID int64, vmName, imag
 		return
 	}
 
-	// Fetch the user's SSH public keys for injection into the VM
-	var sshKeys []string
-	keys, err := s.gw.DB.SSHKeysByUser(ctx, s.user.ID)
-	if err == nil {
-		for _, k := range keys {
-			sshKeys = append(sshKeys, k.PublicKey)
-		}
-	}
+	sshKeys := s.vmSSHKeys(ctx)
 
 	for _, v := range vmRecord {
 		if v.ID == vmID && v.IPAddress.Valid {
@@ -182,6 +191,7 @@ func (s *Shell) registerVMMetadata(ctx context.Context, vmID int64, vmName, imag
 				VMName:     vmName,
 				Image:      image,
 				SSHKeys:    sshKeys,
+				Gateway:    "10.0.0.1",
 			})
 			return
 		}

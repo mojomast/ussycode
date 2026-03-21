@@ -20,6 +20,7 @@ import (
 type FirecrackerBackend struct {
 	firecrackerBin string // path to firecracker binary
 	kernelPath     string // path to vmlinux guest kernel
+	initrdPath     string // path to initrd image
 	dataDir        string // base dir for VM runtime files
 	logger         *slog.Logger
 }
@@ -60,6 +61,23 @@ func NewFirecrackerBackend(firecrackerBin, kernelPath, dataDir string, logger *s
 		return nil, fmt.Errorf("kernel not found at %s: %w", kernelPath, err)
 	}
 
+	initrdPath := filepath.Join(dataDir, "initrd.img")
+	if _, err := os.Stat(initrdPath); err != nil {
+		fallbacks := []string{
+			"/boot/initrd.img-6.12.74+deb13+1-cloud-amd64",
+			"/boot/initrd.img-6.12.74+deb13+1-amd64",
+		}
+		for _, candidate := range fallbacks {
+			if _, err := os.Stat(candidate); err == nil {
+				initrdPath = candidate
+				break
+			}
+		}
+		if _, err := os.Stat(initrdPath); err != nil {
+			initrdPath = ""
+		}
+	}
+
 	// Ensure runtime directory exists
 	runDir := filepath.Join(dataDir, "run")
 	if err := os.MkdirAll(runDir, 0755); err != nil {
@@ -69,6 +87,7 @@ func NewFirecrackerBackend(firecrackerBin, kernelPath, dataDir string, logger *s
 	return &FirecrackerBackend{
 		firecrackerBin: firecrackerBin,
 		kernelPath:     kernelPath,
+		initrdPath:     initrdPath,
 		dataDir:        dataDir,
 		logger:         logger,
 	}, nil
@@ -89,7 +108,7 @@ func (fb *FirecrackerBackend) StartVM(ctx context.Context, opts *VMStartOptions)
 	os.Remove(socketPath)
 
 	// Build kernel boot args
-	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off"
+	bootArgs := "console=ttyS0 reboot=k panic=1 rootwait pci=off"
 	if opts.NetworkConfig != nil {
 		// Configure static IP via kernel boot args
 		bootArgs += fmt.Sprintf(" ip=%s::%s:%s::eth0:off",
@@ -103,6 +122,7 @@ func (fb *FirecrackerBackend) StartVM(ctx context.Context, opts *VMStartOptions)
 	fcCfg := firecracker.Config{
 		SocketPath:      socketPath,
 		KernelImagePath: fb.kernelPath,
+		InitrdPath:      fb.initrdPath,
 		KernelArgs:      bootArgs,
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  firecracker.Int64(int64(opts.VCPU)),
@@ -170,6 +190,7 @@ func (fb *FirecrackerBackend) StartVM(ctx context.Context, opts *VMStartOptions)
 		"vcpu", opts.VCPU,
 		"memory_mb", opts.MemoryMB,
 		"rootfs", opts.RootfsPath,
+		"initrd", fb.initrdPath,
 	)
 
 	if err := machine.Start(vmCtx); err != nil {

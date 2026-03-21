@@ -7,44 +7,10 @@
 #   - Default catch-all that shows a landing page
 {
 	admin {{ caddy_admin_listen }}
-
-{% if ussycode_acme_email %}
-	email {{ ussycode_acme_email }}
-{% endif %}
+	http_port 8085
 }
 
-# Wildcard certificate for all VM subdomains
-*.{{ ussycode_domain }} {
-	tls {
-{% if ussycode_acme_email %}
-		email {{ ussycode_acme_email }}
-{% endif %}
-{% if caddy_dns_api_token %}
-		dns {{ caddy_dns_provider }} {{ caddy_dns_api_token }}
-{% else %}
-		# DNS challenge requires an API token.
-		# Set caddy_dns_api_token in your inventory.
-		dns {{ caddy_dns_provider }} {env.CLOUDFLARE_API_TOKEN}
-{% endif %}
-	}
-
-	# Default: show a "VM not found" page for unknown subdomains.
-	# ussycode adds specific routes per VM via the admin API.
-	respond "VM not found. Connect via: ssh {{ ussycode_domain }}" 404
-}
-
-# Root domain — landing page
-{{ ussycode_domain }} {
-	tls {
-{% if ussycode_acme_email %}
-		email {{ ussycode_acme_email }}
-{% endif %}
-{% if caddy_dns_api_token %}
-		dns {{ caddy_dns_provider }} {{ caddy_dns_api_token }}
-{% else %}
-		dns {{ caddy_dns_provider }} {env.CLOUDFLARE_API_TOKEN}
-{% endif %}
-	}
-
+# Internal app server for the edge proxy
+http://{{ caddy_site_listen }} {
 	respond "ussycode - SSH dev environments. Connect: ssh {{ ussycode_domain }}" 200
 }

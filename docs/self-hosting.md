@@ -70,9 +70,10 @@ The playbook runs these roles in order:
 1. **common** -- System packages, UFW firewall, sysctl tuning
 2. **zfs** -- ZFS pool and dataset hierarchy
 3. **firecracker** -- Firecracker binary, jailer, guest kernel
-4. **caddy** -- Reverse proxy with wildcard TLS
-5. **ussycode** -- The platform binary and systemd service
-6. **monitoring** -- Prometheus node_exporter
+4. **edge** -- nginx public edge that forwards VM traffic to internal Caddy
+5. **caddy** -- Internal reverse proxy and dynamic VM route manager
+6. **ussycode** -- The platform binary and systemd service
+7. **monitoring** -- Prometheus node_exporter
 
 ### Run Specific Roles
 
@@ -180,6 +181,7 @@ USSYCODE_HTTP_ADDR=:8080
 USSYCODE_DATA_DIR=/var/lib/ussycode
 USSYCODE_DB_PATH=/var/lib/ussycode/ussycode.db
 USSYCODE_CADDY_ADMIN=http://localhost:2019
+USSYCODE_METADATA_ADDR=:8083
 USSYCODE_STORAGE=zfs
 USSYCODE_STORAGE_POOL=vmpool
 USSYCODE_VMM=firecracker
@@ -241,7 +243,7 @@ All configuration is via environment variables (set in `/etc/ussycode/ussycode.e
 | Variable | Flag | Default | Description |
 |----------|------|---------|-------------|
 | `USSYCODE_CADDY_ADMIN` | `--caddy-api` | `http://localhost:2019` | Caddy admin API URL |
-| `USSYCODE_METADATA_ADDR` | `--metadata-addr` | `169.254.169.254:80` | Metadata service address |
+| `USSYCODE_METADATA_ADDR` | `--metadata-addr` | `:8083` | Internal metadata service listen address |
 | `USSYCODE_AUTH_PROXY_ADDR` | `--auth-proxy-addr` | `:9876` | Auth proxy listen address |
 
 ### VM Settings
@@ -252,8 +254,8 @@ All configuration is via environment variables (set in `/etc/ussycode/ussycode.e
 | `USSYCODE_KERNEL` | `--kernel` | `$DATA_DIR/vmlinux` | Guest kernel path |
 | `USSYCODE_FIRECRACKER_BIN` | `--firecracker` | `firecracker` | Firecracker binary path |
 | `USSYCODE_DEFAULT_IMAGE` | `--default-image` | `ussyuntu` | Default container image |
-| `USSYCODE_DEFAULT_CPU` | `--default-cpu` | `1` | Default vCPUs per VM |
-| `USSYCODE_DEFAULT_MEM` | `--default-mem` | `512` | Default memory (MB) per VM |
+| `USSYCODE_DEFAULT_CPU` | `--default-cpu` | `1` | Global default vCPUs per VM (shell defaults may raise this within trust limits) |
+| `USSYCODE_DEFAULT_MEM` | `--default-mem` | `512` | Global default memory (MB) per VM (shell defaults may raise this within trust limits) |
 | `USSYCODE_DEFAULT_DISK` | `--default-disk` | `5` | Default disk (GB) per VM |
 | `USSYCODE_MAX_VMS` | `--max-vms` | `5` | Max VMs per user |
 
@@ -361,3 +363,19 @@ journalctl -u caddy -n 50 --no-pager
 # Verify DNS is resolving correctly
 dig +short *.dev.example.com
 ```
+
+### VM web apps are only visible on localhost
+
+ussycode only proxies port `8080` from each VM by default.
+
+Run apps like this inside the VM:
+
+```bash
+python3 -m http.server 8080 --bind 0.0.0.0
+```
+
+OpenCode is bundled into fresh `ussyuntu` VMs with a preinstalled `ussycode-web-proxy` skill that teaches it to:
+
+- bind servers to `0.0.0.0`
+- use port `8080`
+- return the public proxied URL instead of `localhost`

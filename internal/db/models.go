@@ -35,6 +35,8 @@ func (t *SQLiteTime) Scan(value interface{}) error {
 		}
 		t.Time = parsed
 		return nil
+	case []byte:
+		return t.Scan(string(v))
 	case time.Time:
 		t.Time = v
 		return nil

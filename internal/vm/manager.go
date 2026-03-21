@@ -7,10 +7,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/mojomast/ussycode/internal/db"
 )
+
+const ussycodeOpencodeConfig = `{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["instructions/ussycode-runtime.md"]
+}
+`
+
+const ussycodeOpencodeInstruction = "You are running inside a ussycode VM.\n\nWhen a user asks you to run, preview, host, expose, or share a web app from this VM, load the ussycode-web-proxy skill and follow it.\n\nDefault behavior in this environment:\n- bind web servers to 0.0.0.0, not localhost\n- prefer port 8080 because ussycode proxies that port automatically\n- if USSYCODE_PUBLIC_DOMAIN is available, use https://<hostname>.<domain> as the public URL\n"
+
+const ussycodeOpencodeSkill = "---\nname: ussycode-web-proxy\ndescription: Expose web apps correctly from a ussycode VM by binding to 0.0.0.0:8080 and reporting the public proxy URL.\n---\n\n## When to use me\n\nUse this when the user wants to run, preview, host, expose, share, or remotely access an HTTP app from inside a ussycode VM.\n\n## What to do\n\n- Bind services to `0.0.0.0`, not `127.0.0.1`.\n- Prefer port `8080` because ussycode proxies that port automatically.\n- If a framework defaults to another port, change it to `8080` unless the user explicitly wants something else.\n- Report the public URL as `https://<hostname>.<domain>` when `USSYCODE_PUBLIC_DOMAIN` is available.\n- If the app is already running on the wrong host or port, fix the command/config rather than just reporting a localhost URL.\n\n## Common commands\n\n- `python3 -m http.server 8080 --bind 0.0.0.0`\n- `uvicorn app:app --host 0.0.0.0 --port 8080`\n- `streamlit run app.py --server.address 0.0.0.0 --server.port 8080`\n- `npm run dev -- --host 0.0.0.0 --port 8080`\n- `vite --host 0.0.0.0 --port 8080`\n- `next dev -H 0.0.0.0 -p 8080`\n\n## Verify\n\n- confirm the app listens on `0.0.0.0:8080`\n- tell the user the public URL, not just the localhost URL\n"
 
 // Manager orchestrates VM lifecycle: image pulling, rootfs creation,
 // network allocation, Firecracker boot, and cleanup.
@@ -93,10 +104,223 @@ func NewManager(database *db.DB, cfg *ManagerConfig, logger *slog.Logger) (*Mana
 	}, nil
 }
 
+func (m *Manager) SeedAuthorizedKeys(ctx context.Context, vmID int64, keys []string) error {
+	rootfs := filepath.Join(m.dataDir, "disks", fmt.Sprintf("vm-%d-rootfs.ext4", vmID))
+	if _, err := os.Stat(rootfs); err != nil {
+		return fmt.Errorf("stat rootfs: %w", err)
+	}
+
+	if err := m.configureGuestSSH(ctx, rootfs); err != nil {
+		return err
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	tmpFile, err := os.CreateTemp("", "ussycode-authorized-keys-*.txt")
+	if err != nil {
+		return fmt.Errorf("create temp keys file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	content := strings.Join(keys, "\n") + "\n"
+	if _, err := tmpFile.WriteString(content); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp keys file: %w", err)
+	}
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	commands := []string{
+		"rm /home/ussycode/.ssh/authorized_keys",
+		fmt.Sprintf("write %s /home/ussycode/.ssh/authorized_keys", tmpPath),
+		"set_inode_field /home/ussycode/.ssh/authorized_keys uid 1001",
+		"set_inode_field /home/ussycode/.ssh/authorized_keys gid 1001",
+		"set_inode_field /home/ussycode/.ssh/authorized_keys mode 0100600",
+		"set_inode_field /home/ussycode/.ssh uid 1001",
+		"set_inode_field /home/ussycode/.ssh gid 1001",
+		"set_inode_field /home/ussycode/.ssh mode 040700",
+		"set_inode_field /home/ussycode uid 1001",
+		"set_inode_field /home/ussycode gid 1001",
+	}
+
+	for _, cmdText := range commands {
+		cmd := exec.CommandContext(ctx, "debugfs", "-w", "-R", cmdText, rootfs)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("debugfs %q: %s: %w", cmdText, string(out), err)
+		}
+	}
+
+	return nil
+}
+
+func (m *Manager) configureGuestSSH(ctx context.Context, rootfs string) error {
+	if err := rewriteExt4File(ctx, rootfs, "/etc/ssh/sshd_config", 0, 0, "0100644", func(s string) string {
+		if strings.Contains(s, "\nUsePAM yes\n") {
+			s = strings.ReplaceAll(s, "\nUsePAM yes\n", "\nUsePAM no\n")
+		}
+		if !strings.Contains(s, "\nUsePAM no\n") {
+			if !strings.HasSuffix(s, "\n") {
+				s += "\n"
+			}
+			s += "UsePAM no\n"
+		}
+		return s
+	}); err != nil {
+		return fmt.Errorf("patch sshd_config: %w", err)
+	}
+
+	if err := rewriteExt4File(ctx, rootfs, "/etc/shadow", 0, 42, "0100640", func(s string) string {
+		lines := strings.Split(s, "\n")
+		for i, line := range lines {
+			if !strings.HasPrefix(line, "ussycode:") {
+				continue
+			}
+			parts := strings.Split(line, ":")
+			if len(parts) > 1 && (strings.HasPrefix(parts[1], "!") || strings.HasPrefix(parts[1], "*")) {
+				parts[1] = "x"
+				lines[i] = strings.Join(parts, ":")
+			}
+			break
+		}
+		return strings.Join(lines, "\n")
+	}); err != nil {
+		return fmt.Errorf("patch shadow: %w", err)
+	}
+
+	if err := rewriteExt4File(ctx, rootfs, "/usr/bin/sudo", 0, 0, "0104755", func(s string) string {
+		return s
+	}); err != nil {
+		return fmt.Errorf("patch sudo permissions: %w", err)
+	}
+
+	if err := rewriteExt4File(ctx, rootfs, "/etc/resolv.conf", 0, 0, "0100644", func(string) string {
+		return "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+	}); err != nil {
+		return fmt.Errorf("patch resolv.conf: %w", err)
+	}
+
+	if err := m.installOpencodeRuntimeFiles(ctx, rootfs); err != nil {
+		return fmt.Errorf("install opencode runtime files: %w", err)
+	}
+
+	return nil
+}
+
+func (m *Manager) installOpencodeRuntimeFiles(ctx context.Context, rootfs string) error {
+	base := filepath.Join("home", "ussycode", ".config", "opencode")
+	if err := mkdirExt4(ctx, rootfs, "/home/ussycode/.config"); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/home/ussycode/.config/opencode"); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/home/ussycode/.config/opencode/instructions"); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/home/ussycode/.config/opencode/skills"); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/home/ussycode/.config/opencode/skills/ussycode-web-proxy"); err != nil {
+		return err
+	}
+
+	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "opencode.json"), ussycodeOpencodeConfig, 1001, 1001, "0100644"); err != nil {
+		return err
+	}
+	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "instructions", "ussycode-runtime.md"), ussycodeOpencodeInstruction, 1001, 1001, "0100644"); err != nil {
+		return err
+	}
+	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "skills", "ussycode-web-proxy", "SKILL.md"), ussycodeOpencodeSkill, 1001, 1001, "0100644"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mkdirExt4(ctx context.Context, rootfs, dir string) error {
+	cmd := exec.CommandContext(ctx, "debugfs", "-w", "-R", fmt.Sprintf("mkdir %s", dir), rootfs)
+	out, err := cmd.CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "Ext2 directory already exists") {
+		return fmt.Errorf("debugfs mkdir %s: %s: %w", dir, string(out), err)
+	}
+	return nil
+}
+
+func writeExt4File(ctx context.Context, rootfs, guestPath, content string, uid, gid int, mode string) error {
+	tmpFile, err := os.CreateTemp("", "ussycode-ext4-write-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.WriteString(content); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	commands := []string{
+		fmt.Sprintf("rm %s", guestPath),
+		fmt.Sprintf("write %s %s", tmpPath, guestPath),
+		fmt.Sprintf("set_inode_field %s uid %d", guestPath, uid),
+		fmt.Sprintf("set_inode_field %s gid %d", guestPath, gid),
+		fmt.Sprintf("set_inode_field %s mode %s", guestPath, mode),
+	}
+	for _, cmdText := range commands {
+		cmd := exec.CommandContext(ctx, "debugfs", "-w", "-R", cmdText, rootfs)
+		out, err := cmd.CombinedOutput()
+		if err != nil && !(strings.HasPrefix(cmdText, "rm ") && strings.Contains(string(out), "File not found")) {
+			return fmt.Errorf("debugfs %q: %s: %w", cmdText, string(out), err)
+		}
+	}
+	return nil
+}
+
+func rewriteExt4File(ctx context.Context, rootfs, guestPath string, uid, gid int, mode string, mutate func(string) string) error {
+	tmpFile, err := os.CreateTemp("", "ussycode-ext4-file-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	dumpCmd := exec.CommandContext(ctx, "debugfs", "-R", fmt.Sprintf("dump %s %s", guestPath, tmpPath), rootfs)
+	if out, err := dumpCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("debugfs dump %s: %s: %w", guestPath, string(out), err)
+	}
+
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmpPath, []byte(mutate(string(data))), 0600); err != nil {
+		return err
+	}
+
+	commands := []string{
+		fmt.Sprintf("rm %s", guestPath),
+		fmt.Sprintf("write %s %s", tmpPath, guestPath),
+		fmt.Sprintf("set_inode_field %s uid %d", guestPath, uid),
+		fmt.Sprintf("set_inode_field %s gid %d", guestPath, gid),
+		fmt.Sprintf("set_inode_field %s mode %s", guestPath, mode),
+	}
+	for _, cmdText := range commands {
+		cmd := exec.CommandContext(ctx, "debugfs", "-w", "-R", cmdText, rootfs)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("debugfs %q: %s: %w", cmdText, string(out), err)
+		}
+	}
+
+	return nil
+}
+
 // CreateAndStart creates a new VM: pulls the image, builds rootfs,
 // allocates networking, and boots via Firecracker. Updates the DB record
 // throughout the process.
-func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef string, vcpu, memoryMB int) error {
+func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef string, vcpu, memoryMB int, sshKeys []string) error {
 	m.logger.Info("creating and starting VM",
 		"vm_id", vmID,
 		"name", name,
@@ -124,6 +348,10 @@ func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef
 		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
 		return fmt.Errorf("copy rootfs: %w", err)
 	}
+	if err := m.SeedAuthorizedKeys(ctx, vmID, sshKeys); err != nil {
+		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+		return fmt.Errorf("seed authorized keys: %w", err)
+	}
 
 	// 3. Create a persistent data disk for the user
 	dataDiskPath := filepath.Join(m.dataDir, "disks", fmt.Sprintf("vm-%d-data.ext4", vmID))
@@ -136,6 +364,10 @@ func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef
 
 	// 4. Allocate network (TAP device + IP)
 	vmIDStr := fmt.Sprintf("%d", vmID)
+	if err := m.network.SetupBridge(); err != nil {
+		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+		return fmt.Errorf("setup bridge: %w", err)
+	}
 	netCfg, err := m.network.AllocateNetwork(vmIDStr)
 	if err != nil {
 		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
@@ -143,6 +375,14 @@ func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef
 	}
 
 	// 5. Boot the VM
+	if fw, ok := m.network.(*NetworkManager); ok {
+		if err := fw.firewall.AddVMRules(ctx, vmIDStr, netCfg.TapDevice, netCfg.GuestIP, fw.bridge); err != nil {
+			m.network.ReleaseNetwork(vmIDStr, netCfg.TapDevice)
+			m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+			return fmt.Errorf("add VM firewall rules: %w", err)
+		}
+	}
+
 	fcVM, err := m.fc.StartVM(ctx, &VMStartOptions{
 		VMID:          vmIDStr,
 		RootfsPath:    vmRootfs,
@@ -191,7 +431,7 @@ func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef
 
 // Start boots an existing stopped VM that already has disk images.
 // Unlike CreateAndStart, this doesn't pull images or create new disks.
-func (m *Manager) Start(ctx context.Context, vmID int64, name, image string, vcpu, memoryMB int) error {
+func (m *Manager) Start(ctx context.Context, vmID int64, name, image string, vcpu, memoryMB int, sshKeys []string) error {
 	m.logger.Info("starting existing VM",
 		"vm_id", vmID,
 		"name", name,
@@ -204,6 +444,10 @@ func (m *Manager) Start(ctx context.Context, vmID int64, name, image string, vcp
 	if _, err := os.Stat(vmRootfs); os.IsNotExist(err) {
 		return fmt.Errorf("rootfs disk not found for VM %d (may need to recreate)", vmID)
 	}
+	if err := m.SeedAuthorizedKeys(ctx, vmID, sshKeys); err != nil {
+		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+		return fmt.Errorf("seed authorized keys: %w", err)
+	}
 
 	dataDiskPath := filepath.Join(m.dataDir, "disks", fmt.Sprintf("vm-%d-data.ext4", vmID))
 
@@ -214,6 +458,10 @@ func (m *Manager) Start(ctx context.Context, vmID int64, name, image string, vcp
 
 	// Allocate network
 	vmIDStr := fmt.Sprintf("%d", vmID)
+	if err := m.network.SetupBridge(); err != nil {
+		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+		return fmt.Errorf("setup bridge: %w", err)
+	}
 	netCfg, err := m.network.AllocateNetwork(vmIDStr)
 	if err != nil {
 		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
@@ -221,6 +469,14 @@ func (m *Manager) Start(ctx context.Context, vmID int64, name, image string, vcp
 	}
 
 	// Boot the VM
+	if fw, ok := m.network.(*NetworkManager); ok {
+		if err := fw.firewall.AddVMRules(ctx, vmIDStr, netCfg.TapDevice, netCfg.GuestIP, fw.bridge); err != nil {
+			m.network.ReleaseNetwork(vmIDStr, netCfg.TapDevice)
+			m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+			return fmt.Errorf("add VM firewall rules: %w", err)
+		}
+	}
+
 	fcVM, err := m.fc.StartVM(ctx, &VMStartOptions{
 		VMID:          vmIDStr,
 		RootfsPath:    vmRootfs,
@@ -287,6 +543,9 @@ func (m *Manager) Stop(ctx context.Context, vmID int64) error {
 	// Release network
 	vmIDStr := fmt.Sprintf("%d", vmID)
 	if rv.NetworkConfig != nil {
+		if fw, ok := m.network.(*NetworkManager); ok {
+			_ = fw.firewall.RemoveVMRules(ctx, vmIDStr, rv.NetworkConfig.TapDevice, fw.bridge)
+		}
 		m.network.ReleaseNetwork(vmIDStr, rv.NetworkConfig.TapDevice)
 	}
 

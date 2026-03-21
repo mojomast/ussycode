@@ -77,7 +77,7 @@ PROMPT.md              One-shot orchestrator prompt for autonomous development
 ### Build
 
 ```bash
-go build -o ussycode ./cmd/exedevussy
+go build -o ussycode ./cmd/ussycode
 ```
 
 ### Test
@@ -89,8 +89,38 @@ go test ./...
 ### Run
 
 ```bash
-sudo ./ussycode --host 0.0.0.0 --ssh-port 2222 --http-port 8080 --domain ussyco.de
+sudo ./ussycode --addr :2222 --http-addr :8080 --domain ussyco.de
 ```
+
+## Web Apps Inside VMs
+
+ussycode automatically proxies each VM's port `8080` to its public subdomain.
+
+- bind app servers to `0.0.0.0`, not `127.0.0.1`
+- prefer port `8080`
+- public URL format is `https://<vm-name>.<domain>`
+
+Example:
+
+```bash
+python3 -m http.server 8080 --bind 0.0.0.0
+```
+
+## OpenCode In VMs
+
+The `ussyuntu` VM image now includes OpenCode plus a bundled OpenCode skill for web exposure.
+
+Inside a fresh VM, OpenCode is preconfigured with:
+
+- `~/.config/opencode/opencode.json`
+- `~/.config/opencode/instructions/ussycode-runtime.md`
+- `~/.config/opencode/skills/ussycode-web-proxy/SKILL.md`
+
+That skill teaches OpenCode to:
+
+- bind dev servers to `0.0.0.0`
+- prefer port `8080`
+- report the public proxied URL instead of `localhost`
 
 ## Parallel Development Tracks
 

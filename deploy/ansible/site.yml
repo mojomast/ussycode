@@ -11,6 +11,7 @@
   become: yes
   roles:
     - common
+    - edge
     - zfs
     - firecracker
     - caddy

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -20,6 +21,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 // ImageConfig holds extracted OCI image config metadata needed to
@@ -66,23 +68,9 @@ func (im *ImageManager) EnsureRootfs(ctx context.Context, imageRef string) (stri
 		return "", nil, fmt.Errorf("parse image ref %q: %w", imageRef, err)
 	}
 
-	// Pull the image descriptor (resolves manifest lists to platform-specific image)
-	desc, err := remote.Get(ref,
-		remote.WithContext(ctx),
-		remote.WithAuthFromKeychain(authn.DefaultKeychain),
-		remote.WithPlatform(v1.Platform{
-			OS:           "linux",
-			Architecture: runtime.GOARCH,
-		}),
-	)
+	img, err := im.getImage(ctx, ref, imageRef)
 	if err != nil {
-		return "", nil, fmt.Errorf("pull image %q: %w", imageRef, err)
-	}
-
-	// Get the image from the descriptor
-	img, err := desc.Image()
-	if err != nil {
-		return "", nil, fmt.Errorf("get image from descriptor: %w", err)
+		return "", nil, err
 	}
 
 	// Use the image digest as the cache key
@@ -146,6 +134,76 @@ func (im *ImageManager) EnsureRootfs(ctx context.Context, imageRef string) (stri
 	return ext4Path, cfg, nil
 }
 
+func (im *ImageManager) getImage(ctx context.Context, ref name.Reference, imageRef string) (v1.Image, error) {
+	// Prefer local Docker images for short names like "ussyuntu".
+	localCandidates := []string{imageRef}
+	if !strings.Contains(imageRef, ":") {
+		localCandidates = append(localCandidates, imageRef+":latest")
+	}
+	for _, candidate := range localCandidates {
+		localRef, err := name.NewTag(candidate, name.WeakValidation)
+		if err != nil {
+			continue
+		}
+		if img, err := im.loadLocalDockerImage(ctx, localRef, candidate); err == nil {
+			im.logger.Info("using local docker image", "image", candidate)
+			return img, nil
+		}
+	}
+
+	// Fallback to remote registry pull.
+	desc, err := remote.Get(ref,
+		remote.WithContext(ctx),
+		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+		remote.WithPlatform(v1.Platform{
+			OS:           "linux",
+			Architecture: runtime.GOARCH,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("pull image %q: %w", imageRef, err)
+	}
+
+	img, err := desc.Image()
+	if err != nil {
+		return nil, fmt.Errorf("get image from descriptor: %w", err)
+	}
+	return img, nil
+}
+
+func (im *ImageManager) loadLocalDockerImage(ctx context.Context, ref name.Reference, image string) (v1.Image, error) {
+	localDir := filepath.Join(im.cacheDir, "local-images")
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		return nil, fmt.Errorf("create local image cache dir: %w", err)
+	}
+	cacheName := strings.NewReplacer("/", "_", ":", "_", "@", "_").Replace(image) + ".tar"
+	tmpPath := filepath.Join(localDir, cacheName)
+
+	if _, err := os.Stat(tmpPath); os.IsNotExist(err) {
+		tmpFile, err := os.Create(tmpPath)
+		if err != nil {
+			return nil, err
+		}
+		tmpFile.Close()
+
+		cmd := exec.CommandContext(ctx, "docker", "save", "-o", tmpPath, image)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("docker save %q: %s: %w", image, string(out), err)
+		}
+	}
+
+	tag, err := name.NewTag(image, name.WeakValidation)
+	if err != nil {
+		return nil, fmt.Errorf("parse local tag %q: %w", image, err)
+	}
+	img, err := tarball.ImageFromPath(tmpPath, &tag)
+	if err != nil {
+		return nil, fmt.Errorf("load tarball image %q: %w", image, err)
+	}
+	return img, nil
+}
+
 // extractConfig reads the OCI image config and returns our simplified ImageConfig.
 func (im *ImageManager) extractConfig(img v1.Image) (*ImageConfig, error) {
 	cfgFile, err := img.ConfigFile()
@@ -201,6 +259,7 @@ func (im *ImageManager) extractRootfs(ctx context.Context, img v1.Image, destDir
 			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
 				return fmt.Errorf("mkdir %s: %w", hdr.Name, err)
 			}
+			_ = applyOwnership(target, hdr.Uid, hdr.Gid)
 
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
@@ -215,6 +274,7 @@ func (im *ImageManager) extractRootfs(ctx context.Context, img v1.Image, destDir
 				return fmt.Errorf("write %s: %w", hdr.Name, err)
 			}
 			f.Close()
+			_ = applyOwnership(target, hdr.Uid, hdr.Gid)
 
 		case tar.TypeSymlink:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
@@ -225,6 +285,7 @@ func (im *ImageManager) extractRootfs(ctx context.Context, img v1.Image, destDir
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return fmt.Errorf("symlink %s -> %s: %w", hdr.Name, hdr.Linkname, err)
 			}
+			_ = os.Lchown(target, hdr.Uid, hdr.Gid)
 
 		case tar.TypeLink:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
@@ -251,6 +312,13 @@ func (im *ImageManager) extractRootfs(ctx context.Context, img v1.Image, destDir
 	}
 
 	return nil
+}
+
+func applyOwnership(path string, uid, gid int) error {
+	if uid == 0 && gid == 0 {
+		return nil
+	}
+	return os.Chown(path, uid, gid)
 }
 
 // ensureEssentialDirs creates directories that must exist in the rootfs
@@ -289,6 +357,31 @@ func (im *ImageManager) ensureEssentialDirs(rootDir string) error {
 	if _, err := os.Stat(hostname); os.IsNotExist(err) {
 		if err := os.WriteFile(hostname, []byte("ussycode\n"), 0644); err != nil {
 			return fmt.Errorf("write hostname: %w", err)
+		}
+	}
+
+	// Ensure the ussycode user home has the expected ownership if present.
+	if passwdData, err := os.ReadFile(filepath.Join(rootDir, "etc", "passwd")); err == nil {
+		for _, line := range strings.Split(string(passwdData), "\n") {
+			if !strings.HasPrefix(line, "ussycode:") {
+				continue
+			}
+			parts := strings.Split(line, ":")
+			if len(parts) < 7 {
+				break
+			}
+			uid, err1 := strconv.Atoi(parts[2])
+			gid, err2 := strconv.Atoi(parts[3])
+			home := strings.TrimPrefix(parts[5], "/")
+			if err1 == nil && err2 == nil && home != "" {
+				_ = filepath.Walk(filepath.Join(rootDir, home), func(path string, info os.FileInfo, err error) error {
+					if err == nil {
+						_ = os.Lchown(path, uid, gid)
+					}
+					return nil
+				})
+			}
+			break
 		}
 	}
 

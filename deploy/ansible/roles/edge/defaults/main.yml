@@ -1,0 +1,5 @@
+---
+caddy_public_host: "0.0.0.0"
+caddy_public_http_port: 80
+caddy_public_https_port: 443
+caddy_backend: "127.0.0.1:8085"

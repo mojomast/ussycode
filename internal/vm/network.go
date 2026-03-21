@@ -90,6 +90,13 @@ func (nm *NetworkManager) SetupBridge() error {
 		return fmt.Errorf("bring up bridge: %w", err)
 	}
 
+	// Expose the metadata service IP on the bridge so VMs can reach it.
+	// Clear any stale loopback assignment first so the bridge owns the address.
+	_ = runCmd("ip", "addr", "del", "169.254.169.254/32", "dev", "lo")
+	if err := runCmd("ip", "addr", "add", "169.254.169.254/32", "dev", nm.bridge); err != nil {
+		nm.logger.Debug("metadata IP may already be assigned", "error", err)
+	}
+
 	// Enable IP forwarding
 	if err := runCmd("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return fmt.Errorf("enable ip forwarding: %w", err)
@@ -123,7 +130,11 @@ func (nm *NetworkManager) AllocateNetwork(vmID string) (*NetworkConfig, error) {
 	}
 
 	// Generate a unique TAP device name
-	tapName := fmt.Sprintf("tap-%s", vmID[:8])
+	shortID := vmID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	tapName := fmt.Sprintf("tap-%s", shortID)
 	if len(tapName) > 15 {
 		tapName = tapName[:15] // Linux interface name limit
 	}

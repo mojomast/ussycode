@@ -114,7 +114,7 @@ func DefaultConfig() *Config {
 		DataDir:          dataDir,
 		DBPath:           envOrDefault("USSYCODE_DB_PATH", filepath.Join(dataDir, "ussycode.db")),
 		CaddyAdminAddr:   envOrDefault("USSYCODE_CADDY_ADMIN", "http://localhost:2019"),
-		MetadataAddr:     envOrDefault("USSYCODE_METADATA_ADDR", "169.254.169.254:80"),
+		MetadataAddr:     envOrDefault("USSYCODE_METADATA_ADDR", ":8083"),
 		AuthProxyAddr:    envOrDefault("USSYCODE_AUTH_PROXY_ADDR", ":9876"),
 		VMM:              envOrDefault("USSYCODE_VMM", "firecracker"),
 		KernelPath:       envOrDefault("USSYCODE_KERNEL", filepath.Join(dataDir, "vmlinux")),

@@ -61,6 +61,15 @@
   notify: reload caddy
   tags: [caddy, config]
 
+- name: Configure Caddy to use internal site port
+  ansible.builtin.lineinfile:
+    path: /etc/default/caddy
+    regexp: '^#?CADDY_LISTEN='
+    line: 'CADDY_LISTEN={{ caddy_site_listen }}'
+    create: yes
+  notify: restart caddy
+  tags: [caddy, config]
+
 - name: Create Caddy data directory
   ansible.builtin.file:
     path: /var/lib/caddy/.local/share/caddy

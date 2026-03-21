@@ -109,6 +109,9 @@ func main() {
 		AdminAPI: cfg.CaddyAdminAddr,
 		Domain:   cfg.Domain,
 	}, logger.With("component", "proxy"))
+	if cfg.CaddyAdminAddr == "" {
+		log.Println("WARNING: Caddy admin API disabled; browser routes will not be created.")
+	}
 
 	// Try to configure Caddy base config (non-fatal if Caddy isn't running)
 	if proxyMgr.Healthy(ctx) {

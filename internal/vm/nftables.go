@@ -35,6 +35,8 @@ type FirewallManager interface {
 //	        type filter hook input priority 0; policy accept;
 //	        iifname "ussy0" ct state established,related accept
 //	        iifname "ussy0" tcp dport 8083 accept
+//	        iifname "ussy0" tcp dport 80 accept
+//	        iifname "ussy0" tcp dport 443 accept
 //	        iifname "ussy0" drop
 //	    }
 //	    chain prerouting {
@@ -111,6 +113,11 @@ func (n *NftablesManager) SetupNAT(ctx context.Context, bridge, subnetCIDR strin
 	// Using nft -f with a script ensures atomicity — either all rules
 	// are applied or none are.
 	//
+	// The input chain allows VMs to reach:
+	//   - 8083: metadata service (env vars, VM identity)
+	//   - 80/443: nginx (proxies api.ussyco.de → routussy LLM proxy)
+	// All other host-bound traffic from VMs is dropped.
+	//
 	// The prerouting chain redirects VM traffic destined for the metadata
 	// IP (169.254.169.254:80) to the internal metadata service port (8083).
 	// This is needed because nginx binds 0.0.0.0:80 on the host, stealing
@@ -121,6 +128,8 @@ table inet %s {
         type filter hook input priority 0; policy accept;
         iifname "%s" ct state established,related accept
         iifname "%s" tcp dport 8083 accept
+        iifname "%s" tcp dport 80 accept
+        iifname "%s" tcp dport 443 accept
         iifname "%s" drop
     }
     chain prerouting {
@@ -140,7 +149,7 @@ table inet %s {
     }
 }
 `, n.table,
-		bridge, bridge, bridge, // input chain
+		bridge, bridge, bridge, bridge, bridge, // input chain (established, 8083, 80, 443, drop)
 		bridge,             // prerouting chain
 		bridge, subnetCIDR, // postrouting chain
 		bridge, bridge, // forward: inter-VM drop

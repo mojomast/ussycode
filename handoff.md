@@ -2,54 +2,49 @@
 
 _Current as of 2026-03-21. Read this before touching any code._
 
-## Completed: Firecracker Jailer Integration (Phase 6 — hardenussy branch)
+## Completed: SSH Hardening (hardenussy branch)
 
 ### What was done
 
-Added optional Firecracker jailer support, controlled entirely by config. When `JailerBin` is set, VMs run inside chroot isolation via the jailer binary. When empty (default), behavior is unchanged.
+Three security hardening changes to the SSH package:
+
+1. **Locked down `publicKeyHandler`** in `internal/ssh/gateway.go`:
+   - Removed the Tailscale IP (100.64.0.0/10) bypass that allowed all keys from Tailscale IPs
+   - Now ALL unknown users must be verified against routussy, regardless of source IP
+   - If `RoutussyURL` is not configured, unknown users are rejected entirely (no more open registration)
+   - Known local-DB users are still always allowed
+   - Removed the now-unused `isTailscaleIP()` function
+
+2. **Disabled interactive registration** in `sessionHandler()` in `internal/ssh/gateway.go`:
+   - Replaced `handleRegistration()` call with a rejection message
+   - Directs users to register at `https://discord.gg/ussyverse`
+
+3. **Per-user SSH keys for VM proxy** in `internal/ssh/commands.go`:
+   - Changed `proxySSHSession()` signature to accept `userID int64`
+   - Replaced shared `hostKeyPath` with per-user key via `VM.EnsureUserKey(userID)`
+   - Updated caller `cmdSSH()` to pass `s.user.ID`
 
 ### Files Modified
 
-1. **`internal/config/config.go`** — Added 4 new config fields:
-   - `JailerBin` (env: `USSYCODE_JAILER_BIN`, flag: `-jailer`, default: `""` = disabled)
-   - `JailerUID` (env: `USSYCODE_JAILER_UID`, flag: `-jailer-uid`, default: `30000`)
-   - `JailerGID` (env: `USSYCODE_JAILER_GID`, flag: `-jailer-gid`, default: `30000`)
-   - `ChrootBaseDir` (env: `USSYCODE_CHROOT_BASE_DIR`, flag: `-chroot-base`, default: `/srv/jailer`)
+1. **`internal/ssh/gateway.go`** — publicKeyHandler hardening + registration removal
+2. **`internal/ssh/commands.go`** — proxySSHSession per-user key + caller update
 
-2. **`internal/vm/manager.go`** — Added jailer fields to `ManagerConfig` struct. Updated `NewManager()` to pass `JailerConfig` to `NewFirecrackerBackend()`.
+### Previously completed on this branch (by earlier Ralph)
 
-3. **`cmd/ussycode/main.go`** — Updated `ManagerConfig` initialization to pass all 4 jailer config fields from the global config.
-
-4. **`internal/vm/firecracker.go`** — Major changes:
-   - Added `JailerConfig` struct with `Enabled()` method
-   - Added `jailer *JailerConfig` field to `FirecrackerBackend`
-   - Added `jailedID string` field to `FirecrackerVM` (for chroot cleanup)
-   - Updated `NewFirecrackerBackend()` signature to accept `*JailerConfig`
-   - Added jailer binary validation (gracefully disables if binary not found)
-   - Added chroot base dir creation on startup
-   - Updated `StartVM()` to branch: if jailer enabled, sets `fcCfg.JailerCfg` with `NaiveChrootStrategy`, cgroup v2, `Daemonize: false`; if disabled, uses `WithProcessRunner()` as before
-   - Added jailer chroot cleanup in `StopVM()` (removes `{ChrootBaseDir}/firecracker/{vmID}/`)
-
-### Key Design Decisions
-
-- **Jailer is optional** — empty `JailerBin` = disabled, no behavior change
-- **Graceful degradation** — if jailer binary path is set but binary not found, logs warning and disables jailer instead of failing
-- **NaiveChrootStrategy** — hard-links kernel/drives into chroot (requires same filesystem)
-- **CgroupVersion: "2"** — system uses cgroup v2
-- **Daemonize: false** — required for Go process management to work
-- **No `WithProcessRunner()`** when jailer enabled — SDK builds the command internally
+- **`internal/vm/manager.go`** — `EnsureUserKey()`, `UserKeyPath()`, `UserPublicKey()` methods + keys directory creation
+- **`internal/ssh/shell.go`** — `vmSSHKeys()` updated to inject per-user gateway public key instead of shared host key
 
 ### Context for Next Task
 
-- The existing Phase 0 blockers from the previous handoff still apply
 - All LSP errors in the repo are false positives from missing `go mod download`
-- The `NetworkConfig` "undefined" LSP error in firecracker.go is because the type is defined in a different file in the same package
+- The `handleRegistration` function still exists somewhere but is no longer called from `sessionHandler` — it could be cleaned up
+- Phase 0 blockers from devplan.md still need resolution
+- `go build ./...` should remain clean once `go mod download` is run
 
 ---
 
 ## Previous Context (preserved from earlier handoff)
 
-See git history for the full original handoff content. Key points:
 - 80+ tests across 12 packages
 - 1 known test failure: `TestSMTPServer_DotStuffing` in `internal/gateway`
 - Phase 0 blockers (P0-1 through P0-8) still need resolution before feature work

@@ -60,6 +60,10 @@ type Manager struct {
 	dataDir string
 	logger  *slog.Logger
 
+	// Configurable disk sizes (in GB)
+	defaultRootfsGB int // size to grow rootfs copies to (default 8)
+	defaultDiskGB   int // size for new data disks (default 5)
+
 	// Track running VMs for shutdown/cleanup
 	mu      sync.RWMutex
 	running map[int64]*RunningVM // VM ID -> running state
@@ -76,15 +80,17 @@ type RunningVM struct {
 
 // ManagerConfig holds the configuration for the VM manager.
 type ManagerConfig struct {
-	DataDir        string // base dir for all VM data
-	FirecrackerBin string
-	KernelPath     string
-	BridgeName     string
-	SubnetCIDR     string
-	JailerBin      string // path to jailer binary (empty = disabled)
-	JailerUID      int    // unprivileged UID for jailed VMs
-	JailerGID      int    // unprivileged GID for jailed VMs
-	ChrootBaseDir  string // base dir for jailer chroots
+	DataDir         string // base dir for all VM data
+	FirecrackerBin  string
+	KernelPath      string
+	BridgeName      string
+	SubnetCIDR      string
+	JailerBin       string // path to jailer binary (empty = disabled)
+	JailerUID       int    // unprivileged UID for jailed VMs
+	JailerGID       int    // unprivileged GID for jailed VMs
+	ChrootBaseDir   string // base dir for jailer chroots
+	DefaultRootfsGB int    // size to grow rootfs copies to (0 = use 8GB)
+	DefaultDiskGB   int    // size for new data disks (0 = use 5GB)
 }
 
 // NewManager creates a new VM manager with all subsystems initialized.
@@ -131,14 +137,25 @@ func NewManager(database *db.DB, cfg *ManagerConfig, logger *slog.Logger) (*Mana
 		return nil, fmt.Errorf("init firecracker: %w", err)
 	}
 
+	rootfsGB := cfg.DefaultRootfsGB
+	if rootfsGB <= 0 {
+		rootfsGB = 8
+	}
+	diskGB := cfg.DefaultDiskGB
+	if diskGB <= 0 {
+		diskGB = 5
+	}
+
 	return &Manager{
-		db:      database,
-		images:  images,
-		network: network,
-		fc:      fc,
-		dataDir: cfg.DataDir,
-		logger:  logger,
-		running: make(map[int64]*RunningVM),
+		db:              database,
+		images:          images,
+		network:         network,
+		fc:              fc,
+		dataDir:         cfg.DataDir,
+		logger:          logger,
+		defaultRootfsGB: rootfsGB,
+		defaultDiskGB:   diskGB,
+		running:         make(map[int64]*RunningVM),
 	}, nil
 }
 
@@ -395,6 +412,14 @@ func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef
 		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
 		return fmt.Errorf("copy rootfs: %w", err)
 	}
+
+	// Grow the rootfs copy to the configured size (base image is shrunk to minimum)
+	rootfsSizeBytes := int64(m.defaultRootfsGB) * 1024 * 1024 * 1024
+	if err := growExt4(ctx, vmRootfs, rootfsSizeBytes); err != nil {
+		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+		return fmt.Errorf("grow rootfs: %w", err)
+	}
+
 	if err := m.SeedAuthorizedKeys(ctx, vmID, sshKeys); err != nil {
 		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
 		return fmt.Errorf("seed authorized keys: %w", err)
@@ -403,7 +428,8 @@ func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef
 	// 3. Create a persistent data disk for the user
 	dataDiskPath := filepath.Join(m.dataDir, "disks", fmt.Sprintf("vm-%d-data.ext4", vmID))
 	if _, err := os.Stat(dataDiskPath); os.IsNotExist(err) {
-		if err := createEmptyExt4(ctx, dataDiskPath, 5*1024*1024*1024); err != nil { // 5GB
+		dataSizeBytes := int64(m.defaultDiskGB) * 1024 * 1024 * 1024
+		if err := createEmptyExt4(ctx, dataDiskPath, dataSizeBytes); err != nil {
 			m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
 			return fmt.Errorf("create data disk: %w", err)
 		}
@@ -714,6 +740,113 @@ func (m *Manager) NetworkManager() NetworkBackend {
 }
 
 // --- helpers ---
+
+// growExt4 grows an ext4 filesystem image to the given size.
+// Uses truncate to expand the sparse file, then resize2fs to grow the filesystem.
+// This is safe to call on an image that is already the target size or larger.
+func growExt4(ctx context.Context, path string, sizeBytes int64) error {
+	// Check current file size -- only grow, never shrink
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Size() >= sizeBytes {
+		return nil // already at or above target
+	}
+
+	// Grow the sparse file
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open for truncate: %w", err)
+	}
+	if err := f.Truncate(sizeBytes); err != nil {
+		f.Close()
+		return fmt.Errorf("truncate to %d: %w", sizeBytes, err)
+	}
+	f.Close()
+
+	// Expand the ext4 filesystem to fill the new size
+	cmd := exec.CommandContext(ctx, "resize2fs", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("resize2fs %s: %s: %w", path, string(out), err)
+	}
+
+	return nil
+}
+
+// ResizeDisk resizes a VM's disk image (rootfs or data).
+// The VM must be stopped. Grows the sparse file and expands the ext4 filesystem.
+// diskType must be "rootfs" or "data".
+func (m *Manager) ResizeDisk(ctx context.Context, vmID int64, diskType string, newSizeGB int) error {
+	// Verify VM is not running
+	m.mu.RLock()
+	_, isRunning := m.running[vmID]
+	m.mu.RUnlock()
+	if isRunning {
+		return fmt.Errorf("VM %d is running; stop it first", vmID)
+	}
+
+	var diskPath string
+	switch diskType {
+	case "rootfs":
+		diskPath = filepath.Join(m.dataDir, "disks", fmt.Sprintf("vm-%d-rootfs.ext4", vmID))
+	case "data":
+		diskPath = filepath.Join(m.dataDir, "disks", fmt.Sprintf("vm-%d-data.ext4", vmID))
+	default:
+		return fmt.Errorf("unknown disk type %q (use rootfs or data)", diskType)
+	}
+
+	info, err := os.Stat(diskPath)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("disk not found: %s", diskPath)
+	}
+	if err != nil {
+		return fmt.Errorf("stat disk: %w", err)
+	}
+
+	newSizeBytes := int64(newSizeGB) * 1024 * 1024 * 1024
+
+	// Prevent shrinking — only grow
+	currentGB := info.Size() / (1024 * 1024 * 1024)
+	if newSizeBytes <= info.Size() {
+		return fmt.Errorf("disk is already %dGB; can only grow, not shrink", currentGB)
+	}
+
+	m.logger.Info("resizing disk",
+		"vm_id", vmID,
+		"disk_type", diskType,
+		"new_size_gb", newSizeGB,
+		"path", diskPath,
+	)
+
+	// Run e2fsck first to ensure filesystem is clean
+	fsckCmd := exec.CommandContext(ctx, "e2fsck", "-f", "-y", diskPath)
+	if out, err := fsckCmd.CombinedOutput(); err != nil {
+		// e2fsck exits 1 for "errors corrected" which is OK
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() <= 1 {
+			m.logger.Debug("e2fsck corrected errors", "output", string(out))
+		} else {
+			return fmt.Errorf("e2fsck %s: %s: %w", diskPath, string(out), err)
+		}
+	}
+
+	if err := growExt4(ctx, diskPath, newSizeBytes); err != nil {
+		return fmt.Errorf("grow disk: %w", err)
+	}
+
+	m.logger.Info("disk resized successfully",
+		"vm_id", vmID,
+		"disk_type", diskType,
+		"new_size_gb", newSizeGB,
+	)
+
+	return nil
+}
+
+// DefaultDiskGB returns the configured default data disk size in GB.
+func (m *Manager) DefaultDiskGB() int {
+	return m.defaultDiskGB
+}
 
 // copyFile copies a file from src to dst using a simple read/write.
 func copyFile(src, dst string) error {

@@ -68,15 +68,17 @@ func main() {
 	// Try to initialize VM manager (optional -- may fail if firecracker is not installed)
 	var vmManager *vm.Manager
 	vmManager, err = vm.NewManager(database, &vm.ManagerConfig{
-		DataDir:        cfg.DataDir,
-		FirecrackerBin: cfg.FirecrackerBin,
-		KernelPath:     cfg.KernelPath,
-		BridgeName:     cfg.NetworkBridge,
-		SubnetCIDR:     cfg.NetworkSubnet,
-		JailerBin:      cfg.JailerBin,
-		JailerUID:      cfg.JailerUID,
-		JailerGID:      cfg.JailerGID,
-		ChrootBaseDir:  cfg.ChrootBaseDir,
+		DataDir:         cfg.DataDir,
+		FirecrackerBin:  cfg.FirecrackerBin,
+		KernelPath:      cfg.KernelPath,
+		BridgeName:      cfg.NetworkBridge,
+		SubnetCIDR:      cfg.NetworkSubnet,
+		JailerBin:       cfg.JailerBin,
+		JailerUID:       cfg.JailerUID,
+		JailerGID:       cfg.JailerGID,
+		ChrootBaseDir:   cfg.ChrootBaseDir,
+		DefaultRootfsGB: 8,
+		DefaultDiskGB:   cfg.DefaultDiskGB,
 	}, logger.With("component", "vm"))
 	if err != nil {
 		log.Printf("WARNING: VM manager unavailable: %v", err)

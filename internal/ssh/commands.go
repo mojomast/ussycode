@@ -42,6 +42,7 @@ var commands = map[string]CommandFunc{
 	"share":   cmdShare,
 	"admin":   cmdAdmin,
 	"llm-key": cmdLLMKey,
+	"resize":  cmdResize,
 	// tutorial is registered in tutorial.go init() to avoid init cycle
 }
 
@@ -71,6 +72,7 @@ func cmdHelp(s *Shell, args []string) error {
 	s.writeln("    restart <name> restart an environment")
 	s.writeln("    rename <old> <new>  rename an environment")
 	s.writeln("    cp <name> [new]     clone an environment")
+	s.writeln("    resize <name> <GB>  resize disk (VM must be stopped)")
 	s.writeln("    tag <name> <tag>    add a tag")
 	s.writeln("    tag -d <name> <tag> remove a tag")
 	s.writeln("")
@@ -213,6 +215,24 @@ func cmdNew(s *Shell, args []string) error {
 		return fmt.Errorf("VM limit reached (%d/%d). Upgrade trust level or remove a VM.", vmCount, limits.VMLimit)
 	}
 
+	diskGB := 5
+	if s.gw.VM != nil {
+		diskGB = s.gw.VM.DefaultDiskGB()
+	}
+
+	// Enforce disk quota
+	if limits.DiskLimit >= 0 {
+		totalDiskGB, err := s.gw.DB.GetUserTotalDiskGB(ctx, s.user.ID)
+		if err != nil {
+			return fmt.Errorf("check disk usage: %w", err)
+		}
+		newTotalMB := (totalDiskGB + diskGB) * 1024
+		if newTotalMB > limits.DiskLimit {
+			return fmt.Errorf("disk quota exceeded: %dGB used + %dGB new > %dGB limit",
+				totalDiskGB, diskGB, limits.DiskLimit/1024)
+		}
+	}
+
 	vcpu := 2
 	memoryMB := 2048
 	if limits.CPULimit > 0 && vcpu > limits.CPULimit {
@@ -225,7 +245,7 @@ func cmdNew(s *Shell, args []string) error {
 		memoryMB = 512
 	}
 
-	vmRecord, err := s.gw.DB.CreateVM(ctx, s.user.ID, name, image, vcpu, memoryMB, 5)
+	vmRecord, err := s.gw.DB.CreateVM(ctx, s.user.ID, name, image, vcpu, memoryMB, diskGB)
 	if err != nil {
 		return fmt.Errorf("create vm: %w", err)
 	}
@@ -1700,6 +1720,103 @@ func cmdLLMKeyRemove(s *Shell, args []string) error {
 	}
 
 	s.writef("  removed API key for %s.\n", provider)
+	return nil
+}
+
+// ── resize ───────────────────────────────────────────────────────────
+
+func cmdResize(s *Shell, args []string) error {
+	rootfs, args := hasFlag(args, "--rootfs")
+
+	if len(args) < 2 {
+		s.writeln("")
+		s.writeln("  \033[1mresize\033[0m -- resize a VM's disk (must be stopped)")
+		s.writeln("")
+		s.writeln("    resize <name> <size-in-GB>")
+		s.writeln("    resize --rootfs <name> <size-in-GB>")
+		s.writeln("")
+		s.writeln("  resizes the data disk by default.")
+		s.writeln("  use --rootfs to resize the root filesystem instead.")
+		s.writeln("")
+		return nil
+	}
+
+	ctx := context.Background()
+	name := args[0]
+	var newSizeGB int
+	if _, err := fmt.Sscanf(args[1], "%d", &newSizeGB); err != nil {
+		return fmt.Errorf("invalid size %q: must be an integer (GB)", args[1])
+	}
+	if newSizeGB < 1 {
+		return fmt.Errorf("size must be at least 1 GB")
+	}
+	if newSizeGB > 500 {
+		return fmt.Errorf("size must be at most 500 GB")
+	}
+
+	vmRecord, err := s.gw.DB.VMByUserAndName(ctx, s.user.ID, name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no vm named %q", name)
+		}
+		return fmt.Errorf("lookup: %w", err)
+	}
+
+	if vmRecord.Status == "running" {
+		return fmt.Errorf("vm %q is running. stop it first with: stop %s", name, name)
+	}
+
+	// Enforce disk quota from trust level
+	limits := db.GetTrustLimits(s.user.TrustLevel)
+	if limits.DiskLimit >= 0 {
+		// Get current total disk usage across all user's VMs
+		totalDiskGB, err := s.gw.DB.GetUserTotalDiskGB(ctx, s.user.ID)
+		if err != nil {
+			return fmt.Errorf("check disk usage: %w", err)
+		}
+
+		// Calculate the delta: how much more disk this resize would add
+		currentDiskGB := vmRecord.DiskGB
+		if rootfs {
+			// For rootfs resize, we don't track it in disk_gb; use an estimate
+			currentDiskGB = 0
+		}
+		delta := newSizeGB - currentDiskGB
+		if delta > 0 {
+			newTotalMB := (totalDiskGB + delta) * 1024
+			if newTotalMB > limits.DiskLimit {
+				return fmt.Errorf("disk quota exceeded: %dGB used + %dGB requested > %dGB limit",
+					totalDiskGB, delta, limits.DiskLimit/1024)
+			}
+		}
+	}
+
+	diskType := "data"
+	if rootfs {
+		diskType = "rootfs"
+	}
+
+	if s.gw.VM == nil {
+		return fmt.Errorf("VM manager not available")
+	}
+
+	s.writef("  resizing %s %s disk to %dGB...", name, diskType, newSizeGB)
+
+	if err := s.gw.VM.ResizeDisk(ctx, vmRecord.ID, diskType, newSizeGB); err != nil {
+		s.writef(" failed!\n")
+		return fmt.Errorf("resize: %w", err)
+	}
+
+	// Update DB disk_gb for data disk resize
+	if !rootfs {
+		if err := s.gw.DB.UpdateVMDiskGB(ctx, vmRecord.ID, newSizeGB); err != nil {
+			s.writef(" done (warning: DB update failed: %v)\n", err)
+			return nil
+		}
+	}
+
+	s.writeln(" done!")
+	s.writef("  start %s to use the new disk size.\n", name)
 	return nil
 }
 

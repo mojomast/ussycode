@@ -825,6 +825,27 @@ func (d *DB) GetUserQuotas(ctx context.Context, userID int64) (*TrustLimits, err
 	return &limits, nil
 }
 
+// GetUserTotalDiskGB returns the sum of disk_gb across all of a user's VMs.
+func (d *DB) GetUserTotalDiskGB(ctx context.Context, userID int64) (int, error) {
+	var total int
+	err := d.ReadTx(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx,
+			`SELECT COALESCE(SUM(disk_gb), 0) FROM vms WHERE user_id = ?`, userID,
+		).Scan(&total)
+	})
+	return total, err
+}
+
+// UpdateVMDiskGB updates the disk_gb column for a VM.
+func (d *DB) UpdateVMDiskGB(ctx context.Context, vmID int64, diskGB int) error {
+	return d.WriteTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE vms SET disk_gb = ?, updated_at = ? WHERE id = ?`,
+			diskGB, time.Now().UTC().Format(time.RFC3339), vmID)
+		return err
+	})
+}
+
 // --- Custom Domains ---
 
 // CreateCustomDomain inserts a new custom domain mapping for a VM.

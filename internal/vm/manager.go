@@ -21,8 +21,8 @@ const ussycodeOpencodeConfig = `{
       "npm": "@ai-sdk/openai-compatible",
       "name": "Zai (GLM via ussycode)",
       "options": {
-        "apiKey": "env:OPENCODE_API_KEY",
-        "baseURL": "env:OPENCODE_BASE_URL"
+        "apiKey": "{env:OPENCODE_API_KEY}",
+        "baseURL": "{env:OPENCODE_BASE_URL}"
       },
       "models": {
         "glm-5": { "name": "GLM-5" },

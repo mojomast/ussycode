@@ -21,8 +21,8 @@ const ussycodeOpencodeConfig = `{
       "npm": "@ai-sdk/openai-compatible",
       "name": "Zai (GLM via ussycode)",
       "options": {
-        "apiKey": "env:OPENCODE_API_KEY",
-        "baseURL": "env:OPENCODE_BASE_URL"
+        "apiKey": "{env:OPENCODE_API_KEY}",
+        "baseURL": "{env:OPENCODE_BASE_URL}"
       },
       "models": {
         "glm-5": { "name": "GLM-5" },
@@ -42,9 +42,9 @@ const ussycodeOpencodeConfig = `{
 }
 `
 
-const ussycodeOpencodeInstruction = "You are running inside a ussycode VM.\n\nWhen a user asks you to run, preview, host, expose, or share a web app from this VM, load the ussycode-web-proxy skill and follow it.\n\nDefault behavior in this environment:\n- bind web servers to 0.0.0.0, not localhost\n- prefer port 8080 because ussycode proxies that port automatically\n- if USSYCODE_PUBLIC_DOMAIN is available, use https://<hostname>.<domain> as the public URL\n"
+const ussycodeOpencodeInstruction = "You are running inside a ussycode VM.\n\nWhen a user asks you to run, preview, host, expose, or share a web app from this VM, load the ussycode-web-proxy skill and follow it.\n\nDefault behavior in this environment:\n- bind web servers to 0.0.0.0, not localhost\n- prefer port 8080 because ussycode proxies that port automatically\n- the public URL is https://$USSYCODE_VM_NAME.$USSYCODE_PUBLIC_DOMAIN (read both env vars to construct it)\n"
 
-const ussycodeOpencodeSkill = "---\nname: ussycode-web-proxy\ndescription: Expose web apps correctly from a ussycode VM by binding to 0.0.0.0:8080 and reporting the public proxy URL.\n---\n\n## When to use me\n\nUse this when the user wants to run, preview, host, expose, share, or remotely access an HTTP app from inside a ussycode VM.\n\n## What to do\n\n- Bind services to `0.0.0.0`, not `127.0.0.1`.\n- Prefer port `8080` because ussycode proxies that port automatically.\n- If a framework defaults to another port, change it to `8080` unless the user explicitly wants something else.\n- Report the public URL as `https://<hostname>.<domain>` when `USSYCODE_PUBLIC_DOMAIN` is available.\n- If the app is already running on the wrong host or port, fix the command/config rather than just reporting a localhost URL.\n\n## Common commands\n\n- `python3 -m http.server 8080 --bind 0.0.0.0`\n- `uvicorn app:app --host 0.0.0.0 --port 8080`\n- `streamlit run app.py --server.address 0.0.0.0 --server.port 8080`\n- `npm run dev -- --host 0.0.0.0 --port 8080`\n- `vite --host 0.0.0.0 --port 8080`\n- `next dev -H 0.0.0.0 -p 8080`\n\n## Verify\n\n- confirm the app listens on `0.0.0.0:8080`\n- tell the user the public URL, not just the localhost URL\n"
+const ussycodeOpencodeSkill = "---\nname: ussycode-web-proxy\ndescription: Expose web apps correctly from a ussycode VM by binding to 0.0.0.0:8080 and reporting the public proxy URL.\n---\n\n## When to use me\n\nUse this when the user wants to run, preview, host, expose, share, or remotely access an HTTP app from inside a ussycode VM.\n\n## What to do\n\n1. Read the env vars `USSYCODE_VM_NAME` and `USSYCODE_PUBLIC_DOMAIN` to construct the public URL.\n2. The public URL is always `https://$USSYCODE_VM_NAME.$USSYCODE_PUBLIC_DOMAIN`.\n3. Bind services to `0.0.0.0`, not `127.0.0.1`.\n4. Prefer port `8080` because ussycode proxies that port automatically.\n5. If a framework defaults to another port, change it to `8080` unless the user explicitly wants something else.\n6. If the app is already running on the wrong host or port, fix the command/config rather than just reporting a localhost URL.\n\n## Public URL construction\n\n**Always** read the env vars to build the URL. Example: if `USSYCODE_VM_NAME=mild-owl` and `USSYCODE_PUBLIC_DOMAIN=dev.ussyco.de`, the public URL is `https://mild-owl.dev.ussyco.de`.\n\nDo NOT guess the domain. Do NOT use `vmname.ussyco.de` — always include the full domain from `USSYCODE_PUBLIC_DOMAIN`.\n\n## Common commands\n\n- `python3 -m http.server 8080 --bind 0.0.0.0`\n- `uvicorn app:app --host 0.0.0.0 --port 8080`\n- `streamlit run app.py --server.address 0.0.0.0 --server.port 8080`\n- `npm run dev -- --host 0.0.0.0 --port 8080`\n- `vite --host 0.0.0.0 --port 8080`\n- `next dev -H 0.0.0.0 -p 8080`\n\n## Verify\n\n- confirm the app listens on `0.0.0.0:8080`\n- tell the user the public URL (from env vars), not a localhost URL\n"
 
 // Manager orchestrates VM lifecycle: image pulling, rootfs creation,
 // network allocation, Firecracker boot, and cleanup.

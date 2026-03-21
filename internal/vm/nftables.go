@@ -91,8 +91,17 @@ func (n *NftablesManager) SetupNAT(ctx context.Context, bridge, subnetCIDR strin
 	// Build the nftables ruleset as a single atomic script.
 	// Using nft -f with a script ensures atomicity — either all rules
 	// are applied or none are.
+	//
+	// The prerouting chain redirects VM traffic destined for the metadata
+	// IP (169.254.169.254:80) to the internal metadata service port (8083).
+	// This is needed because nginx binds 0.0.0.0:80 on the host, stealing
+	// port 80 on the metadata IP before our metadata server can grab it.
 	ruleset := fmt.Sprintf(`
 table inet %s {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+        iifname "%s" ip daddr 169.254.169.254 tcp dport 80 redirect to :8083
+    }
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
         oifname != "%s" ip saddr %s masquerade
@@ -103,7 +112,7 @@ table inet %s {
         oifname "%s" ct state established,related accept
     }
 }
-`, n.table, bridge, subnetCIDR, bridge, bridge)
+`, n.table, bridge, bridge, subnetCIDR, bridge, bridge)
 
 	// First, try to delete any existing table (ignore errors if it doesn't exist)
 	n.runner.Execute(ctx, "nft", "delete", "table", "inet", n.table)

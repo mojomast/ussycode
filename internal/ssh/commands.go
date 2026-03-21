@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	mathrand "math/rand"
 	"net"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/creack/pty/v2"
 	"github.com/mojomast/ussycode/internal/db"
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -299,8 +301,9 @@ func cmdSSH(s *Shell, args []string) error {
 
 // proxySSHSession dials the VM's SSH server and pipes the gateway
 // user's terminal to the VM's shell session, handling window resize.
+// It allocates a local PTY so the inner ssh process has a real tty,
+// and forwards window-change events from the gateway session.
 func proxySSHSession(s *Shell, vmIP string) error {
-	addr := net.JoinHostPort(vmIP, "22")
 	args := []string{
 		"-tt",
 		"-o", "BatchMode=yes",
@@ -313,22 +316,59 @@ func proxySSHSession(s *Shell, vmIP string) error {
 		"ussycode@" + vmIP,
 	}
 	cmd := exec.Command("ssh", args...)
-	cmd.Stdin = s.session
-	cmd.Stdout = s.session
-	cmd.Stderr = s.session.Stderr()
 	cmd.Env = os.Environ()
 	cmd.Dir = "/"
 
-	if ptyReq, _, ok := s.session.Pty(); ok && ptyReq.Term != "" {
+	ptyReq, winCh, isPty := s.session.Pty()
+	if isPty && ptyReq.Term != "" {
 		cmd.Env = append(cmd.Env, "TERM="+ptyReq.Term)
 	}
 
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			_ = ee
+	// Start the ssh subprocess with a local PTY so it gets a real
+	// controlling terminal. Set the initial size from the client.
+	ws := &pty.Winsize{Rows: 24, Cols: 80}
+	if isPty {
+		ws.Rows = uint16(ptyReq.Window.Height)
+		ws.Cols = uint16(ptyReq.Window.Width)
+	}
+
+	ptmx, err := pty.StartWithSize(cmd, ws)
+	if err != nil {
+		return fmt.Errorf("start ssh with pty: %w", err)
+	}
+	defer ptmx.Close()
+
+	// Forward window-change events from the gateway session to the
+	// local PTY. The inner ssh process receives SIGWINCH and forwards
+	// the new size to the VM's sshd automatically.
+	if isPty {
+		go func() {
+			for win := range winCh {
+				pty.Setsize(ptmx, &pty.Winsize{
+					Rows: uint16(win.Height),
+					Cols: uint16(win.Width),
+				})
+			}
+		}()
+	}
+
+	// Bidirectional copy between the gateway session and the PTY.
+	done := make(chan struct{}, 2)
+	go func() {
+		io.Copy(ptmx, s.session) // user -> ssh subprocess
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(s.session, ptmx) // ssh subprocess -> user
+		done <- struct{}{}
+	}()
+
+	// Wait for the subprocess to exit, then drain any remaining output.
+	if err := cmd.Wait(); err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
 			return nil
 		}
-		return fmt.Errorf("connect to VM at %s: %w", addr, err)
+		return fmt.Errorf("connect to VM at %s: %w", vmIP, err)
 	}
 	return nil
 }

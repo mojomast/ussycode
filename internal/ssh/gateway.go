@@ -18,6 +18,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -210,11 +211,11 @@ type routussyUserResponse struct {
 
 // checkRoutussyFingerprint queries the Routussy API to verify an SSH fingerprint.
 func (g *Gateway) checkRoutussyFingerprint(fingerprint string) bool {
-	url := fmt.Sprintf("%s/ussycode/user-by-fingerprint?fingerprint=%s",
-		strings.TrimRight(g.RoutussyURL, "/"), fingerprint)
+	reqURL := fmt.Sprintf("%s/ussycode/user-by-fingerprint?fingerprint=%s",
+		strings.TrimRight(g.RoutussyURL, "/"), url.QueryEscape(fingerprint))
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		log.Printf("[auth] routussy request error: %v", err)
 		return false
@@ -253,11 +254,11 @@ func (g *Gateway) LookupRoutussyUser(fingerprint string) (*routussyUserResponse,
 		return nil, fmt.Errorf("routussy URL not configured")
 	}
 
-	url := fmt.Sprintf("%s/ussycode/user-by-fingerprint?fingerprint=%s",
-		strings.TrimRight(g.RoutussyURL, "/"), fingerprint)
+	reqURL := fmt.Sprintf("%s/ussycode/user-by-fingerprint?fingerprint=%s",
+		strings.TrimRight(g.RoutussyURL, "/"), url.QueryEscape(fingerprint))
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

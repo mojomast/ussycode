@@ -10,11 +10,17 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	gssh "github.com/gliderlabs/ssh"
 	"github.com/mojomast/ussycode/internal/db"
@@ -44,6 +50,14 @@ type Gateway struct {
 	hostSigner  gossh.Signer
 	hostKeyPath string
 	domain      string
+
+	// RoutussyURL is the base URL of the Routussy proxy for SSH key validation
+	// and API key lookup. If empty, all SSH keys are accepted (legacy behavior).
+	RoutussyURL string
+
+	// RoutussyInternalKey is the shared secret for authenticating to Routussy
+	// internal API endpoints. Sent as Bearer token.
+	RoutussyInternalKey string
 }
 
 // New creates a new SSH gateway. If the host key file doesn't exist,
@@ -121,12 +135,24 @@ func (g *Gateway) loadOrGenerateHostKey() (gssh.Signer, error) {
 }
 
 // publicKeyHandler is called for each SSH public key auth attempt.
-// We always accept the key — user lookup and registration happens
-// in the session handler. This allows new users to connect.
+//
+// Behavior depends on whether Routussy integration is configured:
+//
+//  1. If RoutussyURL is set and the connection is NOT from a Tailscale IP
+//     (100.x.y.z), the fingerprint is validated against Routussy's authorized
+//     key database. Unknown keys are rejected.
+//
+//  2. If the connection IS from a Tailscale IP, or RoutussyURL is not configured,
+//     all keys are accepted (legacy/internal behavior). Unknown users will see
+//     the registration flow in the session handler.
 func (g *Gateway) publicKeyHandler(ctx gssh.Context, key gssh.PublicKey) bool {
 	fingerprint := gossh.FingerprintSHA256(key)
-	log.Printf("[auth] publicKeyHandler called for fingerprint=%s", fingerprint)
+	remoteAddr := ctx.RemoteAddr().String()
+	remoteIP, _, _ := net.SplitHostPort(remoteAddr)
 
+	log.Printf("[auth] publicKeyHandler called for fingerprint=%s remote=%s", fingerprint, remoteIP)
+
+	// Look up user in ussycode's local DB first
 	user, err := g.DB.UserByFingerprint(context.Background(), fingerprint)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -134,8 +160,6 @@ func (g *Gateway) publicKeyHandler(ctx gssh.Context, key gssh.PublicKey) bool {
 		} else {
 			log.Printf("[auth] no user found for fingerprint=%s (new user)", fingerprint)
 		}
-		// Not found or error — still accept the key so we can show
-		// registration flow or error in the session handler.
 	} else {
 		log.Printf("[auth] found existing user: %s (id=%d) for fingerprint=%s", user.Handle, user.ID, fingerprint)
 		ctx.SetValue(ctxKeyUser, user)
@@ -143,7 +167,122 @@ func (g *Gateway) publicKeyHandler(ctx gssh.Context, key gssh.PublicKey) bool {
 
 	ctx.SetValue(ctxKeyFingerprint, fingerprint)
 	ctx.SetValue(ctxKeyPublicKey, key)
+
+	// If routussy integration is configured, validate non-tailscale connections
+	if g.RoutussyURL != "" && !isTailscaleIP(remoteIP) {
+		if user != nil {
+			// Known local user — allow
+			return true
+		}
+
+		// Unknown user from non-tailscale IP: check with routussy
+		authorized := g.checkRoutussyFingerprint(fingerprint)
+		if !authorized {
+			log.Printf("[auth] REJECTED: fingerprint=%s from non-tailscale IP=%s not in routussy", fingerprint, remoteIP)
+			return false
+		}
+		log.Printf("[auth] routussy authorized fingerprint=%s from IP=%s", fingerprint, remoteIP)
+	}
+
 	return true
+}
+
+// isTailscaleIP checks if an IP is in the Tailscale CGNAT range (100.64.0.0/10).
+func isTailscaleIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	// Tailscale uses 100.64.0.0/10 (CGNAT range)
+	_, tailscaleNet, _ := net.ParseCIDR("100.64.0.0/10")
+	return tailscaleNet.Contains(parsed)
+}
+
+// routussyUserResponse is the response from routussy's /ussycode/user-by-fingerprint endpoint.
+type routussyUserResponse struct {
+	UserID       string `json:"user_id"`
+	DiscordID    string `json:"discord_id"`
+	BudgetCents  int    `json:"budget_cents"`
+	SpentCents   int    `json:"spent_cents"`
+	SSHPubkey    string `json:"ssh_pubkey"`
+	APIKeyPrefix string `json:"api_key_prefix"`
+}
+
+// checkRoutussyFingerprint queries the Routussy API to verify an SSH fingerprint.
+func (g *Gateway) checkRoutussyFingerprint(fingerprint string) bool {
+	url := fmt.Sprintf("%s/ussycode/user-by-fingerprint?fingerprint=%s",
+		strings.TrimRight(g.RoutussyURL, "/"), fingerprint)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("[auth] routussy request error: %v", err)
+		return false
+	}
+
+	if g.RoutussyInternalKey != "" {
+		req.Header.Set("Authorization", "Bearer "+g.RoutussyInternalKey)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[auth] routussy request failed: %v", err)
+		// On error, fail open for now to avoid locking out all users
+		// if routussy is temporarily down
+		return true
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return false
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		log.Printf("[auth] routussy returned status %d: %s", resp.StatusCode, string(body))
+		// Fail open on unexpected errors
+		return true
+	}
+
+	return true
+}
+
+// LookupRoutussyUser queries routussy for a user by SSH fingerprint and returns
+// their metadata. Used to inject API keys into VM environments.
+func (g *Gateway) LookupRoutussyUser(fingerprint string) (*routussyUserResponse, error) {
+	if g.RoutussyURL == "" {
+		return nil, fmt.Errorf("routussy URL not configured")
+	}
+
+	url := fmt.Sprintf("%s/ussycode/user-by-fingerprint?fingerprint=%s",
+		strings.TrimRight(g.RoutussyURL, "/"), fingerprint)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	if g.RoutussyInternalKey != "" {
+		req.Header.Set("Authorization", "Bearer "+g.RoutussyInternalKey)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var user routussyUserResponse
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	return &user, nil
 }
 
 // sessionHandler is the main entry point for each SSH session.

@@ -15,7 +15,13 @@ import (
 
 const ussycodeOpencodeConfig = `{
   "$schema": "https://opencode.ai/config.json",
-  "instructions": ["instructions/ussycode-runtime.md"]
+  "instructions": ["instructions/ussycode-runtime.md"],
+  "provider": {
+    "zai": {
+      "api_key": "env:OPENCODE_API_KEY",
+      "url": "env:OPENCODE_BASE_URL"
+    }
+  }
 }
 `
 

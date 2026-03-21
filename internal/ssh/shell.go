@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 
 	gssh "github.com/gliderlabs/ssh"
@@ -180,6 +181,9 @@ func (s *Shell) registerVMMetadata(ctx context.Context, vmID int64, vmName, imag
 
 	sshKeys := s.vmSSHKeys(ctx)
 
+	// Build env vars for the VM, including routussy API key if available
+	envVars := s.buildVMEnvVars()
+
 	for _, v := range vmRecord {
 		if v.ID == vmID && v.IPAddress.Valid {
 			s.gw.Metadata.RegisterVM(v.IPAddress.String, &gateway.VMMetadata{
@@ -192,10 +196,45 @@ func (s *Shell) registerVMMetadata(ctx context.Context, vmID int64, vmName, imag
 				Image:      image,
 				SSHKeys:    sshKeys,
 				Gateway:    "10.0.0.1",
+				EnvVars:    envVars,
 			})
 			return
 		}
 	}
+}
+
+// buildVMEnvVars constructs the environment variables map to inject into a VM.
+// If routussy integration is configured and the user's SSH fingerprint is known
+// to routussy, this includes OPENCODE_API_KEY and OPENCODE_BASE_URL so that
+// OpenCode inside the VM can authenticate against the routussy proxy.
+func (s *Shell) buildVMEnvVars() map[string]string {
+	envVars := make(map[string]string)
+
+	// Only inject routussy env vars if the gateway has routussy configured
+	if s.gw.RoutussyURL == "" {
+		return envVars
+	}
+
+	// Get the SSH fingerprint from the session context
+	fingerprint, _ := s.session.Context().Value(ctxKeyFingerprint).(string)
+	if fingerprint == "" {
+		return envVars
+	}
+
+	// Verify the user is known to routussy before injecting credentials
+	_, err := s.gw.LookupRoutussyUser(fingerprint)
+	if err != nil {
+		log.Printf("[env] routussy lookup failed for fingerprint=%s: %v (skipping API key injection)", fingerprint, err)
+		return envVars
+	}
+
+	// Set the fingerprint-based API key and routussy base URL
+	// The VM will use these to authenticate OpenCode against the routussy proxy
+	envVars["OPENCODE_API_KEY"] = "ussycode-fp:" + fingerprint
+	envVars["OPENCODE_BASE_URL"] = strings.TrimRight(s.gw.RoutussyURL, "/") + "/v1"
+
+	log.Printf("[env] injected routussy env vars for fingerprint=%s", fingerprint)
+	return envVars
 }
 
 // unregisterVMMetadata removes a VM from the metadata service.

@@ -100,6 +100,12 @@ type Config struct {
 
 	// SMTPFromAddress is the From: address for outbound emails
 	SMTPFromAddress string
+
+	// RoutussyURL is the base URL of the Routussy proxy (e.g. "https://api.ussyco.de")
+	RoutussyURL string
+
+	// RoutussyInternalKey is the shared secret for authenticating to Routussy internal API endpoints
+	RoutussyInternalKey string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -107,36 +113,38 @@ type Config struct {
 func DefaultConfig() *Config {
 	dataDir := envOrDefault("USSYCODE_DATA_DIR", "/var/lib/ussycode")
 	return &Config{
-		Domain:           envOrDefault("USSYCODE_DOMAIN", "ussy.host"),
-		SSHListenAddr:    envOrDefault("USSYCODE_SSH_ADDR", ":2222"),
-		SSHHostKeyPath:   envOrDefault("USSYCODE_SSH_HOST_KEY", filepath.Join(dataDir, "ssh_host_ed25519_key")),
-		HTTPListenAddr:   envOrDefault("USSYCODE_HTTP_ADDR", ":8080"),
-		DataDir:          dataDir,
-		DBPath:           envOrDefault("USSYCODE_DB_PATH", filepath.Join(dataDir, "ussycode.db")),
-		CaddyAdminAddr:   envOrDefault("USSYCODE_CADDY_ADMIN", "http://localhost:2019"),
-		MetadataAddr:     envOrDefault("USSYCODE_METADATA_ADDR", ":8083"),
-		AuthProxyAddr:    envOrDefault("USSYCODE_AUTH_PROXY_ADDR", ":9876"),
-		VMM:              envOrDefault("USSYCODE_VMM", "firecracker"),
-		KernelPath:       envOrDefault("USSYCODE_KERNEL", filepath.Join(dataDir, "vmlinux")),
-		DefaultImage:     envOrDefault("USSYCODE_DEFAULT_IMAGE", "ussyuntu"),
-		StorageBackend:   envOrDefault("USSYCODE_STORAGE", "lvm"),
-		StoragePool:      envOrDefault("USSYCODE_STORAGE_POOL", "ussycode"),
-		NetworkBridge:    envOrDefault("USSYCODE_BRIDGE", "ussy0"),
-		NetworkSubnet:    envOrDefault("USSYCODE_SUBNET", "10.0.0.0/24"),
-		MaxVMsPerUser:    envOrDefaultInt("USSYCODE_MAX_VMS", 5),
-		DefaultCPU:       envOrDefaultInt("USSYCODE_DEFAULT_CPU", 1),
-		DefaultMemoryMB:  envOrDefaultInt("USSYCODE_DEFAULT_MEM", 512),
-		DefaultDiskGB:    envOrDefaultInt("USSYCODE_DEFAULT_DISK", 5),
-		TLSEmail:         envOrDefault("USSYCODE_TLS_EMAIL", ""),
-		DNSProvider:      envOrDefault("USSYCODE_DNS_PROVIDER", "cloudflare"),
-		DNSAPIToken:      envOrDefault("USSYCODE_DNS_API_TOKEN", ""),
-		Debug:            envOrDefault("USSYCODE_DEBUG", "") != "",
-		FirecrackerBin:   envOrDefault("USSYCODE_FIRECRACKER_BIN", "firecracker"),
-		AdminListenAddr:  envOrDefault("USSYCODE_ADMIN_ADDR", ":9090"),
-		LLMEncryptSecret: envOrDefault("USSYCODE_LLM_ENCRYPT_SECRET", ""),
-		SMTPListenAddr:   envOrDefault("USSYCODE_SMTP_ADDR", ":2525"),
-		SMTPRelay:        envOrDefault("USSYCODE_SMTP_RELAY", "localhost:25"),
-		SMTPFromAddress:  envOrDefault("USSYCODE_SMTP_FROM", "noreply@ussy.host"),
+		Domain:              envOrDefault("USSYCODE_DOMAIN", "ussy.host"),
+		SSHListenAddr:       envOrDefault("USSYCODE_SSH_ADDR", ":2222"),
+		SSHHostKeyPath:      envOrDefault("USSYCODE_SSH_HOST_KEY", filepath.Join(dataDir, "ssh_host_ed25519_key")),
+		HTTPListenAddr:      envOrDefault("USSYCODE_HTTP_ADDR", ":8080"),
+		DataDir:             dataDir,
+		DBPath:              envOrDefault("USSYCODE_DB_PATH", filepath.Join(dataDir, "ussycode.db")),
+		CaddyAdminAddr:      envOrDefault("USSYCODE_CADDY_ADMIN", "http://localhost:2019"),
+		MetadataAddr:        envOrDefault("USSYCODE_METADATA_ADDR", ":8083"),
+		AuthProxyAddr:       envOrDefault("USSYCODE_AUTH_PROXY_ADDR", ":9876"),
+		VMM:                 envOrDefault("USSYCODE_VMM", "firecracker"),
+		KernelPath:          envOrDefault("USSYCODE_KERNEL", filepath.Join(dataDir, "vmlinux")),
+		DefaultImage:        envOrDefault("USSYCODE_DEFAULT_IMAGE", "ussyuntu"),
+		StorageBackend:      envOrDefault("USSYCODE_STORAGE", "lvm"),
+		StoragePool:         envOrDefault("USSYCODE_STORAGE_POOL", "ussycode"),
+		NetworkBridge:       envOrDefault("USSYCODE_BRIDGE", "ussy0"),
+		NetworkSubnet:       envOrDefault("USSYCODE_SUBNET", "10.0.0.0/24"),
+		MaxVMsPerUser:       envOrDefaultInt("USSYCODE_MAX_VMS", 5),
+		DefaultCPU:          envOrDefaultInt("USSYCODE_DEFAULT_CPU", 1),
+		DefaultMemoryMB:     envOrDefaultInt("USSYCODE_DEFAULT_MEM", 512),
+		DefaultDiskGB:       envOrDefaultInt("USSYCODE_DEFAULT_DISK", 5),
+		TLSEmail:            envOrDefault("USSYCODE_TLS_EMAIL", ""),
+		DNSProvider:         envOrDefault("USSYCODE_DNS_PROVIDER", "cloudflare"),
+		DNSAPIToken:         envOrDefault("USSYCODE_DNS_API_TOKEN", ""),
+		Debug:               envOrDefault("USSYCODE_DEBUG", "") != "",
+		FirecrackerBin:      envOrDefault("USSYCODE_FIRECRACKER_BIN", "firecracker"),
+		AdminListenAddr:     envOrDefault("USSYCODE_ADMIN_ADDR", ":9090"),
+		LLMEncryptSecret:    envOrDefault("USSYCODE_LLM_ENCRYPT_SECRET", ""),
+		SMTPListenAddr:      envOrDefault("USSYCODE_SMTP_ADDR", ":2525"),
+		SMTPRelay:           envOrDefault("USSYCODE_SMTP_RELAY", "localhost:25"),
+		SMTPFromAddress:     envOrDefault("USSYCODE_SMTP_FROM", "noreply@ussy.host"),
+		RoutussyURL:         envOrDefault("USSYCODE_ROUTUSSY_URL", ""),
+		RoutussyInternalKey: envOrDefault("USSYCODE_ROUTUSSY_INTERNAL_KEY", ""),
 	}
 }
 
@@ -174,6 +182,8 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.SMTPListenAddr, "smtp-addr", c.SMTPListenAddr, "Inbound SMTP server listen address")
 	fs.StringVar(&c.SMTPRelay, "smtp-relay", c.SMTPRelay, "Outbound SMTP relay address (host:port)")
 	fs.StringVar(&c.SMTPFromAddress, "smtp-from", c.SMTPFromAddress, "From: address for outbound emails")
+	fs.StringVar(&c.RoutussyURL, "routussy-url", c.RoutussyURL, "Routussy proxy base URL (e.g. https://api.ussyco.de)")
+	fs.StringVar(&c.RoutussyInternalKey, "routussy-key", c.RoutussyInternalKey, "Shared secret for Routussy internal API")
 }
 
 // Validate checks that required configuration is present and consistent.

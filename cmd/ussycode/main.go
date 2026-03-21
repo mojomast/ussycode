@@ -140,6 +140,12 @@ func main() {
 	if llmGW != nil {
 		gw.LLMGateway = llmGW
 	}
+	// Wire Routussy integration for SSH key validation and API key injection
+	if cfg.RoutussyURL != "" {
+		gw.RoutussyURL = cfg.RoutussyURL
+		gw.RoutussyInternalKey = cfg.RoutussyInternalKey
+		log.Printf("Routussy integration enabled: %s", cfg.RoutussyURL)
+	}
 
 	// Initialize API handler
 	apiHandler := api.NewHandler(database, nil, nil, logger.With("component", "api"), nil)

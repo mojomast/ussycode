@@ -80,6 +80,10 @@ if [ -n "$ENV_VARS" ]; then
     log "Writing environment variables"
     echo "$ENV_VARS" > /home/ussycode/.ussycode-env
     chown ussycode:ussycode /home/ussycode/.ussycode-env
+
+    # Also write to /etc/environment for system-wide availability
+    # (ensures non-login shells and child processes inherit the vars)
+    echo "$ENV_VARS" >> /etc/environment
 fi
 
 # ── Set default gateway ─────────────────────────────────────────────

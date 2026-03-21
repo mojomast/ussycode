@@ -1,6 +1,7 @@
 # Compiled binaries
 /exedevussy
 /ussycode
+/ussycode-dev
 /ussyverse-agent
 /ssh.test
 *.test

@@ -73,6 +73,10 @@ func main() {
 		KernelPath:     cfg.KernelPath,
 		BridgeName:     cfg.NetworkBridge,
 		SubnetCIDR:     cfg.NetworkSubnet,
+		JailerBin:      cfg.JailerBin,
+		JailerUID:      cfg.JailerUID,
+		JailerGID:      cfg.JailerGID,
+		ChrootBaseDir:  cfg.ChrootBaseDir,
 	}, logger.With("component", "vm"))
 	if err != nil {
 		log.Printf("WARNING: VM manager unavailable: %v", err)

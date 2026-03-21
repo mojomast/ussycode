@@ -88,6 +88,21 @@ type Config struct {
 	// FirecrackerBin is the path to the firecracker binary
 	FirecrackerBin string
 
+	// JailerBin is the path to the Firecracker jailer binary.
+	// If empty, the jailer is disabled and VMs run without chroot isolation.
+	JailerBin string
+
+	// JailerUID is the unprivileged UID the jailer drops to (e.g. 30000)
+	JailerUID int
+
+	// JailerGID is the unprivileged GID the jailer drops to (e.g. 30000)
+	JailerGID int
+
+	// ChrootBaseDir is the base directory for jailer chroots.
+	// Each VM gets a subdirectory: {ChrootBaseDir}/firecracker/{vmID}/root/
+	// Must be on the same filesystem as KernelPath and DataDir for hard links.
+	ChrootBaseDir string
+
 	// AdminListenAddr is the address the admin web panel listens on
 	AdminListenAddr string
 
@@ -140,6 +155,10 @@ func DefaultConfig() *Config {
 		DNSAPIToken:         envOrDefault("USSYCODE_DNS_API_TOKEN", ""),
 		Debug:               envOrDefault("USSYCODE_DEBUG", "") != "",
 		FirecrackerBin:      envOrDefault("USSYCODE_FIRECRACKER_BIN", "firecracker"),
+		JailerBin:           envOrDefault("USSYCODE_JAILER_BIN", ""),
+		JailerUID:           envOrDefaultInt("USSYCODE_JAILER_UID", 30000),
+		JailerGID:           envOrDefaultInt("USSYCODE_JAILER_GID", 30000),
+		ChrootBaseDir:       envOrDefault("USSYCODE_CHROOT_BASE_DIR", "/srv/jailer"),
 		AdminListenAddr:     envOrDefault("USSYCODE_ADMIN_ADDR", ":9090"),
 		LLMEncryptSecret:    envOrDefault("USSYCODE_LLM_ENCRYPT_SECRET", ""),
 		SMTPListenAddr:      envOrDefault("USSYCODE_SMTP_ADDR", ":2525"),
@@ -166,6 +185,10 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.VMM, "vmm", c.VMM, "Hypervisor backend: firecracker or cloudhv")
 	fs.StringVar(&c.KernelPath, "kernel", c.KernelPath, "Path to guest kernel")
 	fs.StringVar(&c.FirecrackerBin, "firecracker", c.FirecrackerBin, "Path to firecracker binary")
+	fs.StringVar(&c.JailerBin, "jailer", c.JailerBin, "Path to jailer binary (empty = disabled)")
+	fs.IntVar(&c.JailerUID, "jailer-uid", c.JailerUID, "Unprivileged UID for jailed VMs")
+	fs.IntVar(&c.JailerGID, "jailer-gid", c.JailerGID, "Unprivileged GID for jailed VMs")
+	fs.StringVar(&c.ChrootBaseDir, "chroot-base", c.ChrootBaseDir, "Base directory for jailer chroots")
 	fs.StringVar(&c.DefaultImage, "default-image", c.DefaultImage, "Default container image for new VMs")
 	fs.StringVar(&c.StorageBackend, "storage", c.StorageBackend, "Storage backend: lvm or zfs")
 	fs.StringVar(&c.StoragePool, "storage-pool", c.StoragePool, "LVM VG or ZFS pool name")

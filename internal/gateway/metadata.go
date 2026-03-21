@@ -255,7 +255,9 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(value))
 }
 
-// handleVMMetadata returns full VM metadata as JSON.
+// handleVMMetadata returns VM metadata as JSON.
+// EnvVars are excluded to prevent leaking secrets like API keys.
+// Use the /env endpoint for environment variables instead.
 func (s *Server) handleVMMetadata(w http.ResponseWriter, r *http.Request) {
 	meta, err := s.metadataForRequest(r)
 	if err != nil {
@@ -263,8 +265,33 @@ func (s *Server) handleVMMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Return metadata without sensitive fields
+	safe := struct {
+		InstanceID string   `json:"instance-id"`
+		LocalIPv4  string   `json:"local-ipv4"`
+		Hostname   string   `json:"hostname"`
+		UserID     int64    `json:"user-id"`
+		UserHandle string   `json:"user-handle"`
+		VMName     string   `json:"vm-name"`
+		Image      string   `json:"image"`
+		UserData   string   `json:"user-data,omitempty"`
+		SSHKeys    []string `json:"ssh-keys,omitempty"`
+		Gateway    string   `json:"gateway,omitempty"`
+	}{
+		InstanceID: meta.InstanceID,
+		LocalIPv4:  meta.LocalIPv4,
+		Hostname:   meta.Hostname,
+		UserID:     meta.UserID,
+		UserHandle: meta.UserHandle,
+		VMName:     meta.VMName,
+		Image:      meta.Image,
+		UserData:   meta.UserData,
+		SSHKeys:    meta.SSHKeys,
+		Gateway:    meta.Gateway,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(meta)
+	json.NewEncoder(w).Encode(safe)
 }
 
 // handleUserMetadata returns user info as JSON.

@@ -160,6 +160,14 @@ func (nm *NetworkManager) AllocateNetwork(vmID string) (*NetworkConfig, error) {
 		return nil, fmt.Errorf("bring up tap: %w", err)
 	}
 
+	// Enable bridge port isolation to prevent L2 inter-VM traffic.
+	// This prevents VMs from communicating directly at the Ethernet layer,
+	// even before nftables rules are evaluated.
+	if err := runCmd("bridge", "link", "set", "dev", tapName, "isolated", "on"); err != nil {
+		nm.logger.Warn("failed to enable bridge port isolation (kernel 5.14+ required)", "tap", tapName, "error", err)
+		// Non-fatal: nftables inter-VM drop rule provides L3 isolation as fallback
+	}
+
 	nm.allocated[vmID] = ip.String()
 
 	ones, _ := nm.subnet.Mask.Size()

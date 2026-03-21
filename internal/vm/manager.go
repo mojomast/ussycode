@@ -77,6 +77,10 @@ type ManagerConfig struct {
 	KernelPath     string
 	BridgeName     string
 	SubnetCIDR     string
+	JailerBin      string // path to jailer binary (empty = disabled)
+	JailerUID      int    // unprivileged UID for jailed VMs
+	JailerGID      int    // unprivileged GID for jailed VMs
+	ChrootBaseDir  string // base dir for jailer chroots
 }
 
 // NewManager creates a new VM manager with all subsystems initialized.
@@ -111,6 +115,12 @@ func NewManager(database *db.DB, cfg *ManagerConfig, logger *slog.Logger) (*Mana
 		cfg.KernelPath,
 		cfg.DataDir,
 		logger.With("component", "firecracker"),
+		&JailerConfig{
+			Bin:           cfg.JailerBin,
+			UID:           cfg.JailerUID,
+			GID:           cfg.JailerGID,
+			ChrootBaseDir: cfg.ChrootBaseDir,
+		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("init firecracker: %w", err)
@@ -226,6 +236,15 @@ func (m *Manager) configureGuestSSH(ctx context.Context, rootfs string) error {
 
 	if err := m.installOpencodeRuntimeFiles(ctx, rootfs); err != nil {
 		return fmt.Errorf("install opencode runtime files: %w", err)
+	}
+
+	// Patch the init script so existing VMs pick up fixes without a
+	// full image rebuild. The embedded content stays in sync with
+	// images/ussyuntu/init-ussycode.sh via the copy in internal/vm/.
+	if err := rewriteExt4File(ctx, rootfs, "/usr/local/bin/init-ussycode.sh", 0, 0, "0100755", func(string) string {
+		return ussycodeInitScript
+	}); err != nil {
+		return fmt.Errorf("patch init-ussycode.sh: %w", err)
 	}
 
 	return nil

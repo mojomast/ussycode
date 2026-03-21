@@ -31,13 +31,22 @@ type FirewallManager interface {
 // nftables table layout:
 //
 //	table inet ussycode {
+//	    chain input {
+//	        type filter hook input priority 0; policy accept;
+//	        iifname "ussy0" tcp dport 8083 accept
+//	        iifname "ussy0" drop
+//	    }
+//	    chain prerouting {
+//	        type nat hook prerouting priority dstnat; policy accept;
+//	        iifname "ussy0" ip daddr 169.254.169.254 tcp dport 80 redirect to :8083
+//	    }
 //	    chain postrouting {
-//	        type nat hook postrouting priority 100;
+//	        type nat hook postrouting priority 100; policy accept;
 //	        oifname != "ussy0" ip saddr 10.0.0.0/24 masquerade
 //	    }
 //	    chain forward {
 //	        type filter hook forward priority 0; policy drop;
-//	        iifname "ussy0" accept
+//	        iifname "ussy0" oifname "ussy0" drop
 //	        oifname "ussy0" ct state established,related accept
 //	        # per-VM rules added dynamically
 //	    }
@@ -98,6 +107,11 @@ func (n *NftablesManager) SetupNAT(ctx context.Context, bridge, subnetCIDR strin
 	// port 80 on the metadata IP before our metadata server can grab it.
 	ruleset := fmt.Sprintf(`
 table inet %s {
+    chain input {
+        type filter hook input priority 0; policy accept;
+        iifname "%s" tcp dport 8083 accept
+        iifname "%s" drop
+    }
     chain prerouting {
         type nat hook prerouting priority dstnat; policy accept;
         iifname "%s" ip daddr 169.254.169.254 tcp dport 80 redirect to :8083
@@ -108,11 +122,11 @@ table inet %s {
     }
     chain forward {
         type filter hook forward priority 0; policy drop;
-        iifname "%s" accept
+        iifname "%s" oifname "%s" drop
         oifname "%s" ct state established,related accept
     }
 }
-`, n.table, bridge, bridge, subnetCIDR, bridge, bridge)
+`, n.table, bridge, bridge, bridge, bridge, subnetCIDR, bridge, bridge, bridge)
 
 	// First, try to delete any existing table (ignore errors if it doesn't exist)
 	n.runner.Execute(ctx, "nft", "delete", "table", "inet", n.table)

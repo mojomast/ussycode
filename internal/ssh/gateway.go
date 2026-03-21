@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	gssh "github.com/gliderlabs/ssh"
@@ -59,6 +60,9 @@ type Gateway struct {
 	// RoutussyInternalKey is the shared secret for authenticating to Routussy
 	// internal API endpoints. Sent as Bearer token.
 	RoutussyInternalKey string
+
+	// fpCache caches successful routussy fingerprint lookups
+	fpCache *fingerprintCache
 }
 
 // New creates a new SSH gateway. If the host key file doesn't exist,
@@ -76,6 +80,8 @@ func New(database *db.DB, vmManager *vm.Manager, metaSrv *gateway.Server, proxyM
 	if domain == "" {
 		g.domain = "ussy.host"
 	}
+
+	g.fpCache = newFingerprintCache()
 
 	// Load or generate host key
 	signer, err := g.loadOrGenerateHostKey()
@@ -209,7 +215,40 @@ type routussyUserResponse struct {
 	APIKeyPrefix string `json:"api_key_prefix"`
 }
 
+// fingerprintCache caches successful routussy fingerprint lookups to survive
+// brief outages. Unknown fingerprints are never cached — they always fail.
+type fingerprintCache struct {
+	mu      sync.RWMutex
+	entries map[string]time.Time // fingerprint -> expiry time
+}
+
+func newFingerprintCache() *fingerprintCache {
+	return &fingerprintCache{
+		entries: make(map[string]time.Time),
+	}
+}
+
+// get returns true if the fingerprint is cached and not expired.
+func (c *fingerprintCache) get(fingerprint string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	expiry, ok := c.entries[fingerprint]
+	if !ok {
+		return false
+	}
+	return time.Now().Before(expiry)
+}
+
+// set caches a successful fingerprint lookup with a TTL.
+func (c *fingerprintCache) set(fingerprint string, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[fingerprint] = time.Now().Add(ttl)
+}
+
 // checkRoutussyFingerprint queries the Routussy API to verify an SSH fingerprint.
+// Fails closed: if Routussy is unreachable, only previously-cached fingerprints
+// are allowed through. Unknown fingerprints are always rejected.
 func (g *Gateway) checkRoutussyFingerprint(fingerprint string) bool {
 	reqURL := fmt.Sprintf("%s/ussycode/user-by-fingerprint?fingerprint=%s",
 		strings.TrimRight(g.RoutussyURL, "/"), url.QueryEscape(fingerprint))
@@ -227,10 +266,14 @@ func (g *Gateway) checkRoutussyFingerprint(fingerprint string) bool {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[auth] routussy request failed: %v", err)
-		// On error, fail open for now to avoid locking out all users
-		// if routussy is temporarily down
-		return true
+		log.Printf("[auth] routussy unreachable: %v", err)
+		// Fail closed: only allow cached fingerprints
+		if g.fpCache.get(fingerprint) {
+			log.Printf("[auth] routussy down but fingerprint=%s found in cache, allowing", fingerprint)
+			return true
+		}
+		log.Printf("[auth] routussy down and fingerprint=%s not cached, rejecting", fingerprint)
+		return false
 	}
 	defer resp.Body.Close()
 
@@ -240,10 +283,16 @@ func (g *Gateway) checkRoutussyFingerprint(fingerprint string) bool {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		log.Printf("[auth] routussy returned status %d: %s", resp.StatusCode, string(body))
-		// Fail open on unexpected errors
-		return true
+		// Fail closed on unexpected status codes, check cache
+		if g.fpCache.get(fingerprint) {
+			log.Printf("[auth] routussy error but fingerprint=%s found in cache, allowing", fingerprint)
+			return true
+		}
+		return false
 	}
 
+	// Success — cache this fingerprint for 10 minutes
+	g.fpCache.set(fingerprint, 10*time.Minute)
 	return true
 }
 

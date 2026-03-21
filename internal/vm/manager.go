@@ -18,10 +18,27 @@ const ussycodeOpencodeConfig = `{
   "instructions": ["instructions/ussycode-runtime.md"],
   "provider": {
     "zai": {
-      "api_key": "env:OPENCODE_API_KEY",
-      "url": "env:OPENCODE_BASE_URL"
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Zai (GLM via ussycode)",
+      "options": {
+        "apiKey": "env:OPENCODE_API_KEY",
+        "baseURL": "env:OPENCODE_BASE_URL"
+      },
+      "models": {
+        "glm-5": { "name": "GLM-5" },
+        "glm-5-turbo": { "name": "GLM-5 Turbo" },
+        "glm-4.7": { "name": "GLM-4.7" },
+        "glm-4.7-flash": { "name": "GLM-4.7 Flash" },
+        "glm-4.6": { "name": "GLM-4.6" },
+        "glm-4.6v": { "name": "GLM-4.6V" },
+        "glm-4.5": { "name": "GLM-4.5" },
+        "glm-4.5-air": { "name": "GLM-4.5 Air" },
+        "glm-4.5-flash": { "name": "GLM-4.5 Flash" },
+        "glm-4.5v": { "name": "GLM-4.5V" }
+      }
     }
-  }
+  },
+  "model": "zai/glm-5"
 }
 `
 

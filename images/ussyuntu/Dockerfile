@@ -43,6 +43,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # Install OpenCode CLI for in-VM agent workflows
 RUN npm install -g opencode-ai
 
+# Install pi coding agent and ussycode package
+RUN npm install -g @mariozechner/pi-coding-agent @ussyverse/pi-ussycode
+
 # Install Go (latest stable)
 ARG GO_VERSION=1.24.4
 RUN curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz | tar -C /usr/local -xzf -

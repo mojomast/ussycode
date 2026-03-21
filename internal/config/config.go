@@ -32,7 +32,9 @@ type Config struct {
 	// CaddyAdminAddr is the Caddy admin API address
 	CaddyAdminAddr string
 
-	// MetadataAddr is the address the metadata service listens on (169.254.169.254:80)
+	// MetadataAddr is the address the metadata service listens on.
+	// In production this is typically exposed to guests as 169.254.169.254:80,
+	// while the host-side service itself defaults to :8083.
 	MetadataAddr string
 
 	// AuthProxyAddr is the address the auth proxy listens on (for Caddy forward_auth)

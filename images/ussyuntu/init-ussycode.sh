@@ -86,6 +86,31 @@ if [ -n "$ENV_VARS" ]; then
     echo "$ENV_VARS" >> /etc/environment
 fi
 
+# ── Pi coding agent configuration ───────────────────────────────────
+# Ensure pi's config directory exists and has the ussycode package configured.
+# This runs as root during boot, so we set ownership at the end.
+
+PI_CONFIG_DIR="/home/ussycode/.pi/agent"
+mkdir -p "$PI_CONFIG_DIR"
+
+# Write pi settings if not already present (don't overwrite user customizations)
+if [ ! -f "$PI_CONFIG_DIR/settings.json" ]; then
+    cat > "$PI_CONFIG_DIR/settings.json" << 'PIEOF'
+{
+  "defaultProvider": "ussyrouter",
+  "defaultModel": "ussyrouter/glm-4.5-flash",
+  "theme": "ussyverse",
+  "enableSkillCommands": true,
+  "packages": [
+    "npm:@ussyverse/pi-ussycode"
+  ]
+}
+PIEOF
+    log "Wrote pi settings"
+fi
+
+chown -R ussycode:ussycode "/home/ussycode/.pi"
+
 # ── Set default gateway ─────────────────────────────────────────────
 
 # The kernel boot args configure the IP, but we may need to set the

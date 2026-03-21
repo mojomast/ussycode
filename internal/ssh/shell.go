@@ -206,7 +206,9 @@ func (s *Shell) registerVMMetadata(ctx context.Context, vmID int64, vmName, imag
 // buildVMEnvVars constructs the environment variables map to inject into a VM.
 // If routussy integration is configured and the user's SSH fingerprint is known
 // to routussy, this includes OPENCODE_API_KEY and OPENCODE_BASE_URL so that
-// OpenCode inside the VM can authenticate against the routussy proxy.
+// pi and OpenCode inside the VM can authenticate against the routussy proxy.
+// Both pi (default, auto-launches) and OpenCode (optional, manual) use these
+// same env vars for LLM provider authentication.
 func (s *Shell) buildVMEnvVars() map[string]string {
 	envVars := make(map[string]string)
 

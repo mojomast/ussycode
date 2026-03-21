@@ -63,6 +63,7 @@ ssh ussyco.de  -->  SSH Gateway  -->  Control Plane  -->  Firecracker microVM
 | Admin panel | ✅ Implemented |
 | Custom domains | ✅ Implemented |
 | Tutorial (10 lessons) | ✅ Implemented |
+| Pi default AI experience | ✅ Implemented |
 | Arena / community features | ✅ Implemented |
 | API wiring (`POST /exec`) | ⚠️ Needs fix (nil executor) |
 | Browser auth flow | ⚠️ Needs fix (URL mismatch) |
@@ -147,21 +148,25 @@ Example:
 python3 -m http.server 8080 --bind 0.0.0.0
 ```
 
-## OpenCode In VMs
+## AI Assistance In VMs
 
-The `ussyuntu` VM image now includes OpenCode plus a bundled OpenCode skill for web exposure.
+The `ussyuntu` VM image includes **pi** (default) and **OpenCode** (optional) as AI coding assistants.
 
-Inside a fresh VM, OpenCode is preconfigured with:
+### pi (Default — auto-launches on SSH)
 
-- `~/.config/opencode/opencode.json`
-- `~/.config/opencode/instructions/ussycode-runtime.md`
-- `~/.config/opencode/skills/ussycode-web-proxy/SKILL.md`
+pi launches automatically when users SSH into a VM. It's configured with:
 
-That skill teaches OpenCode to:
+- `@ussyverse/pi-ussycode` package for ussycode-specific tools, skills, and theme
+- `ussyrouter` provider for LLM access with budget enforcement
+- Fingerprint-based authentication (no raw API keys exposed)
+- First-run onboarding for new users
+- `/publish` command for quick web app exposure
 
-- bind dev servers to `0.0.0.0`
-- prefer port `8080`
-- report the public proxied URL instead of `localhost`
+Users can exit pi anytime for a normal shell, and restart it with `pi`.
+
+### OpenCode (Optional)
+
+OpenCode remains installed and manually runnable via `opencode`. It uses the same ussyrouter proxy and budget. It does not auto-launch.
 
 ## Credits
 

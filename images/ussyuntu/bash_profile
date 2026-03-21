@@ -19,3 +19,45 @@ fi
 
 # Prompt with hostname (VM name)
 PS1='\[\033[35m\]\h\[\033[0m\]:\[\033[34m\]\w\[\033[0m\]\$ '
+
+# ── Auto-launch pi for interactive SSH sessions ─────────────────────
+# Only launch pi when:
+#   - This is an interactive shell (has a terminal)
+#   - Not a VS Code Remote SSH bootstrap
+#   - Not running a specific command (SSH_ORIGINAL_COMMAND)
+#   - Not already inside pi or another TUI
+#   - pi is installed
+#
+# Users can always:
+#   - Exit pi to get a normal shell (Ctrl+C or /exit)
+#   - Run `pi` manually to restart
+#   - Run `opencode` manually for the alternate AI client
+
+_ussycode_should_launch_pi() {
+    # Must have a terminal
+    [ -t 0 ] && [ -t 1 ] || return 1
+
+    # Not a forced command
+    [ -z "$SSH_ORIGINAL_COMMAND" ] || return 1
+
+    # Not VS Code Remote SSH bootstrap
+    [ -z "$VSCODE_GIT_ASKPASS_NODE" ] || return 1
+    [ -z "$VSCODE_GIT_IPC_HANDLE" ] || return 1
+    [ -z "$VSCODE_INJECTION" ] || return 1
+
+    # Not already inside pi
+    [ -z "$PI_ACTIVE" ] || return 1
+
+    # pi must be installed
+    command -v pi >/dev/null 2>&1 || return 1
+
+    return 0
+}
+
+if _ussycode_should_launch_pi; then
+    export PI_ACTIVE=1
+    # Launch pi — if it exits, user gets a normal shell
+    pi --theme ussyverse 2>/dev/null || true
+    unset PI_ACTIVE
+fi
+unset -f _ussycode_should_launch_pi

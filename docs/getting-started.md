@@ -155,18 +155,41 @@ The default `ussyuntu` image includes:
 - Ubuntu 24.04 LTS base
 - Common dev tools (git, curl, build-essential)
 - SSH server configured
-- OpenCode preinstalled
-- A bundled OpenCode skill that teaches it how to expose apps through the ussycode proxy
+- pi coding agent (default AI assistant, auto-launches on SSH)
+- OpenCode (optional alternate AI client)
+- AI-aware skills for web development and publishing
 
-## OpenCode In A VM
+## AI Assistance In Your VM
 
-Fresh `ussyuntu` VMs include OpenCode config and a built-in skill for web exposure.
+### pi (Default)
 
-When you ask OpenCode to preview or host an app, it should learn to:
+When you SSH into a VM, **pi** launches automatically as your AI coding assistant. pi is pre-configured with:
 
-- bind to `0.0.0.0`
-- use port `8080`
-- tell you the public VM URL instead of a localhost URL
+- **ussyrouter** as the default LLM provider (your budget is managed automatically)
+- **ussyverse theme** for a branded terminal experience
+- **ussycode-aware skills** that teach the AI how web apps, URLs, and publishing work
+- **Built-in tools** for checking status, budget, and publishing your apps
+
+On your first login, pi will show a brief welcome screen and help you get oriented.
+
+**Useful commands inside pi:**
+- `/publish` — check if your app is accessible and get the public URL
+- `/usage` — check your remaining budget
+- Type naturally to ask the AI for help building, debugging, or deploying
+
+**Exiting pi:**
+- Press `Ctrl+C` or type `/exit` to return to a normal shell
+- Run `pi` to restart it anytime
+
+### OpenCode (Optional)
+
+OpenCode is also installed as an alternate AI client. It does not launch automatically.
+
+```bash
+opencode    # run manually if preferred
+```
+
+OpenCode is pre-configured with the same ussyrouter proxy and budget as pi.
 
 ## SSH Key Management
 

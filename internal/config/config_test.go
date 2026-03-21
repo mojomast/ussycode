@@ -15,8 +15,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.SSHListenAddr != ":2222" {
 		t.Errorf("SSHListenAddr = %q, want %q", cfg.SSHListenAddr, ":2222")
 	}
-	if cfg.MetadataAddr != "169.254.169.254:80" {
-		t.Errorf("MetadataAddr = %q, want %q", cfg.MetadataAddr, "169.254.169.254:80")
+	if cfg.MetadataAddr != ":8083" {
+		t.Errorf("MetadataAddr = %q, want %q", cfg.MetadataAddr, ":8083")
 	}
 	if cfg.AuthProxyAddr != ":9876" {
 		t.Errorf("AuthProxyAddr = %q, want %q", cfg.AuthProxyAddr, ":9876")

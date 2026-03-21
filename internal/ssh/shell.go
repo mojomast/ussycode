@@ -184,6 +184,14 @@ func (s *Shell) registerVMMetadata(ctx context.Context, vmID int64, vmName, imag
 	// Build env vars for the VM, including routussy API key if available
 	envVars := s.buildVMEnvVars()
 
+	// Always inject the public domain and VM name so OpenCode's
+	// ussycode-web-proxy skill can construct the correct public URL
+	// (e.g. https://mild-owl.dev.ussyco.de instead of mild-owl.ussyco.de)
+	if s.gw.domain != "" {
+		envVars["USSYCODE_PUBLIC_DOMAIN"] = s.gw.domain
+	}
+	envVars["USSYCODE_VM_NAME"] = vmName
+
 	for _, v := range vmRecord {
 		if v.ID == vmID && v.IPAddress.Valid {
 			s.gw.Metadata.RegisterVM(v.IPAddress.String, &gateway.VMMetadata{

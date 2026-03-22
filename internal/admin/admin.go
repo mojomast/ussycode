@@ -208,7 +208,10 @@ func NewHandler(database *db.DB, templateFS fs.FS, logger *slog.Logger, cfg *Con
 }
 
 // Routes registers admin routes on the given mux.
-// All routes are prefixed with /admin/.
+// All routes are prefixed with /admin/, plus the shared magic-link auth
+// endpoint at /__auth/magic/{token} which is also registered on the main
+// HTTP mux (see cmd/ussycode/main.go) so it is reachable from the public
+// domain regardless of which backend Caddy routes base-domain traffic to.
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/", h.handleDashboard)
 	mux.HandleFunc("GET /admin/login", h.handleLoginPage)
@@ -221,6 +224,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/vms/{id}", h.handleVMDetail)
 	mux.HandleFunc("GET /admin/nodes", h.handleNodes)
 	mux.HandleFunc("GET /admin/static/style.css", h.handleCSS)
+	mux.HandleFunc("GET /__auth/magic/{token}", h.HandleMagicLink)
 }
 
 // --- Auth middleware ---
@@ -312,6 +316,89 @@ func (h *Handler) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Info("admin login", "handle", user.Handle, "id", user.ID)
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+}
+
+// HandleMagicLink is the one-time magic-link authentication endpoint.
+//
+//	GET /__auth/magic/{token}
+//
+// The token is created by the SSH `browser` command and expires after
+// 5 minutes. When redeemed the handler:
+//
+//   - admin/operator users → creates an admin session cookie and redirects
+//     to the admin dashboard (/admin/).
+//   - any other valid user  → redirects to their first running VM
+//     (falls back to / when no VMs exist).
+//
+// This method is exported so it can be mounted on the main HTTP mux
+// (cmd/ussycode/main.go) in addition to the admin-panel mux, ensuring
+// the URL is reachable through Caddy on the public-facing domain.
+func (h *Handler) HandleMagicLink(w http.ResponseWriter, r *http.Request) {
+	ctx, span := telemetry.Start(r.Context(), "admin.magic_link")
+	defer span.End()
+
+	token := r.PathValue("token")
+	if token == "" {
+		http.Error(w, "missing token", http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.db.ValidateMagicToken(ctx, token)
+	if err != nil {
+		telemetry.RecordBrowserToken(ctx, "redeem_failed")
+		h.logger.Warn("magic link auth failed", "error", err)
+		http.Redirect(w, r, "/admin/login?error=invalid+or+expired+token", http.StatusSeeOther)
+		return
+	}
+	telemetry.RecordBrowserToken(ctx, "redeemed")
+
+	h.logger.Info("magic link redeemed", "handle", user.Handle, "trust_level", user.TrustLevel)
+
+	// Admin or operator → create an admin panel session and redirect to the
+	// dashboard.
+	if user.TrustLevel == "operator" || user.TrustLevel == "admin" {
+		sessionID, err := h.sessions.Create(user.ID, user.Handle, sessionTTL)
+		if err != nil {
+			h.logger.Error("failed to create admin session", "error", err, "user", user.Handle)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookieName,
+			Value:    sessionID,
+			Path:     "/admin/",
+			MaxAge:   int(sessionTTL.Seconds()),
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+
+		h.logger.Info("admin magic link login", "handle", user.Handle, "id", user.ID)
+		http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+		return
+	}
+
+	// Regular user → redirect to their first running VM.
+	vms, err := h.db.VMsByUser(ctx, user.ID)
+	if err == nil && len(vms) > 0 {
+		// Prefer a VM that is currently running.
+		for _, v := range vms {
+			if v.Status == "running" {
+				http.Redirect(w, r,
+					fmt.Sprintf("https://%s.%s", v.Name, h.domain),
+					http.StatusSeeOther)
+				return
+			}
+		}
+		// No running VM — use the most-recent one anyway.
+		http.Redirect(w, r,
+			fmt.Sprintf("https://%s.%s", vms[0].Name, h.domain),
+			http.StatusSeeOther)
+		return
+	}
+
+	// No VMs at all → fall back to the platform root.
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {

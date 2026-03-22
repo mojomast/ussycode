@@ -40,7 +40,7 @@ func cmdBrowser(s *Shell, args []string) error {
 	}
 	telemetry.RecordBrowserToken(ctx, "created")
 
-	url := fmt.Sprintf("https://%s/admin/login/callback?token=%s", s.gw.domain, token)
+	url := fmt.Sprintf("https://%s/__auth/magic/%s", s.gw.domain, token)
 
 	s.writeln("")
 	s.writeln("  \033[1mBrowser Access\033[0m")

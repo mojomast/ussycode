@@ -911,3 +911,240 @@ func TestStatusBadge(t *testing.T) {
 		})
 	}
 }
+
+// --- HandleMagicLink tests ---
+
+// newMagicLinkRequest builds a GET request for /__auth/magic/{token} and
+// ensures PathValue("token") is populated as Go's stdlib mux would do.
+func newMagicLinkRequest(t *testing.T, token string) *http.Request {
+	t.Helper()
+	path := "/__auth/magic/" + token
+	req := httptest.NewRequest("GET", path, nil)
+	// Simulate the mux setting the path value (needed when calling the
+	// handler directly without a full mux round-trip).
+	req.SetPathValue("token", token)
+	return req
+}
+
+func TestHandleMagicLink_MissingToken(t *testing.T) {
+	handler, _ := setupTestHandler(t)
+
+	// Call with an empty token value directly.
+	req := httptest.NewRequest("GET", "/__auth/magic/", nil)
+	req.SetPathValue("token", "")
+	w := httptest.NewRecorder()
+
+	handler.HandleMagicLink(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleMagicLink_InvalidToken(t *testing.T) {
+	handler, _ := setupTestHandler(t)
+
+	req := newMagicLinkRequest(t, "does-not-exist")
+	w := httptest.NewRecorder()
+
+	handler.HandleMagicLink(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("expected redirect (303), got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "invalid") || !strings.Contains(loc, "expired") {
+		t.Errorf("expected error redirect, got %q", loc)
+	}
+}
+
+func TestHandleMagicLink_AdminSuccess(t *testing.T) {
+	handler, database := setupTestHandler(t)
+	admin := createAdminUser(t, database, "magicadmin")
+	createMagicToken(t, database, admin.ID, "magic-admin-tok")
+
+	req := newMagicLinkRequest(t, "magic-admin-tok")
+	w := httptest.NewRecorder()
+
+	handler.HandleMagicLink(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("expected redirect (303), got %d", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/admin/" {
+		t.Errorf("expected redirect to /admin/, got %q", loc)
+	}
+
+	// A session cookie must be set.
+	var sessionCookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == sessionCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("expected session cookie to be set")
+	}
+	if sessionCookie.Value == "" {
+		t.Error("expected non-empty session cookie value")
+	}
+
+	// The session must be valid in the store.
+	sess, ok := handler.sessions.Get(sessionCookie.Value)
+	if !ok {
+		t.Error("session not found in store")
+	} else if sess.Handle != "magicadmin" {
+		t.Errorf("expected session handle 'magicadmin', got %q", sess.Handle)
+	}
+}
+
+func TestHandleMagicLink_OperatorSuccess(t *testing.T) {
+	handler, database := setupTestHandler(t)
+	ctx := context.Background()
+
+	user, err := database.CreateUser(ctx, "magicops")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := database.WriteTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE users SET trust_level = 'operator' WHERE id = ?`, user.ID)
+		return err
+	}); err != nil {
+		t.Fatalf("upgrade to operator: %v", err)
+	}
+	createMagicToken(t, database, user.ID, "magic-ops-tok")
+
+	req := newMagicLinkRequest(t, "magic-ops-tok")
+	w := httptest.NewRecorder()
+
+	handler.HandleMagicLink(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("expected redirect (303), got %d", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/admin/" {
+		t.Errorf("expected redirect to /admin/, got %q", loc)
+	}
+	found := false
+	for _, c := range w.Result().Cookies() {
+		if c.Name == sessionCookieName && c.Value != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected session cookie to be set for operator")
+	}
+}
+
+func TestHandleMagicLink_RegularUserWithRunningVM(t *testing.T) {
+	handler, database := setupTestHandler(t)
+	ctx := context.Background()
+
+	user, err := database.CreateUser(ctx, "vmuser")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	vm, err := database.CreateVM(ctx, user.ID, "myapp", "ussyuntu", 1, 512, 5)
+	if err != nil {
+		t.Fatalf("CreateVM: %v", err)
+	}
+
+	// Mark VM as running.
+	running := "running"
+	if err := database.UpdateVMStatus(ctx, vm.ID, "running", nil, nil, nil, nil); err != nil {
+		t.Fatalf("UpdateVMStatus: %v", err)
+	}
+	_ = running
+
+	createMagicToken(t, database, user.ID, "magic-vmuser-tok")
+
+	req := newMagicLinkRequest(t, "magic-vmuser-tok")
+	w := httptest.NewRecorder()
+
+	handler.HandleMagicLink(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("expected redirect (303), got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "myapp") {
+		t.Errorf("expected redirect to VM URL containing 'myapp', got %q", loc)
+	}
+	if !strings.Contains(loc, "test.ussy.host") {
+		t.Errorf("expected redirect URL to contain domain 'test.ussy.host', got %q", loc)
+	}
+}
+
+func TestHandleMagicLink_RegularUserNoVM(t *testing.T) {
+	handler, database := setupTestHandler(t)
+	ctx := context.Background()
+
+	user, err := database.CreateUser(ctx, "novmuser")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	createMagicToken(t, database, user.ID, "magic-novm-tok")
+
+	req := newMagicLinkRequest(t, "magic-novm-tok")
+	w := httptest.NewRecorder()
+
+	handler.HandleMagicLink(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("expected redirect (303), got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if loc != "/" {
+		t.Errorf("expected fallback redirect to /, got %q", loc)
+	}
+}
+
+func TestHandleMagicLink_TokenConsumedAfterUse(t *testing.T) {
+	handler, database := setupTestHandler(t)
+	admin := createAdminUser(t, database, "onceadmin")
+	createMagicToken(t, database, admin.ID, "magic-once-tok")
+
+	// First use — should succeed.
+	req := newMagicLinkRequest(t, "magic-once-tok")
+	w := httptest.NewRecorder()
+	handler.HandleMagicLink(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("first use: expected 303, got %d", w.Code)
+	}
+
+	// Second use — token is already consumed.
+	req2 := newMagicLinkRequest(t, "magic-once-tok")
+	w2 := httptest.NewRecorder()
+	handler.HandleMagicLink(w2, req2)
+	if w2.Code != http.StatusSeeOther {
+		t.Errorf("second use: expected redirect (303), got %d", w2.Code)
+	}
+	loc := w2.Header().Get("Location")
+	if !strings.Contains(loc, "invalid") || !strings.Contains(loc, "expired") {
+		t.Errorf("second use: expected error redirect, got %q", loc)
+	}
+}
+
+// TestHandleMagicLink_ViaRoutes verifies the route is reachable through the
+// mux (i.e. Routes() registers GET /__auth/magic/{token} correctly).
+func TestHandleMagicLink_ViaRoutes(t *testing.T) {
+	handler, database := setupTestHandler(t)
+	admin := createAdminUser(t, database, "routeadmin")
+	createMagicToken(t, database, admin.ID, "magic-route-tok")
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	req := httptest.NewRequest("GET", "/__auth/magic/magic-route-tok", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("expected redirect (303), got %d", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/admin/" {
+		t.Errorf("expected redirect to /admin/, got %q", loc)
+	}
+}

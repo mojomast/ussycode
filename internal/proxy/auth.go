@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -48,8 +49,10 @@ func (ap *AuthProxy) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		// Extract VM name from the Host header
-		vmName := ap.extractVMName(r.Host)
+		// Extract VM name from the Host header.
+		// When called through Caddy's forward_auth the real host arrives in
+		// X-Forwarded-Host; r.Host is the auth proxy's own address in that case.
+		vmName := ap.extractVMName(r)
 		if vmName == "" {
 			telemetry.RecordProxyDecision(ctx, "invalid_host")
 			http.Error(w, "invalid host", http.StatusBadRequest)
@@ -66,7 +69,9 @@ func (ap *AuthProxy) Handler() http.Handler {
 		}
 
 		// Redeem a link token into a short-lived VM-scoped cookie.
-		if token := r.URL.Query().Get("ussy_share"); token != "" {
+		// The token may be in r.URL (direct call / tests) or in the
+		// X-Forwarded-Uri header that Caddy's forward_auth sets.
+		if token := ap.extractShareToken(r); token != "" {
 			share, err := ap.db.ShareByLinkToken(ctx, token)
 			if err != nil || share.VMID != vm.ID {
 				telemetry.RecordProxyDecision(ctx, "share_link_invalid")
@@ -85,11 +90,11 @@ func (ap *AuthProxy) Handler() http.Handler {
 				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
 			})
-			cleanURL := *r.URL
-			q := cleanURL.Query()
-			q.Del("ussy_share")
-			cleanURL.RawQuery = q.Encode()
-			w.Header().Set("Location", cleanURL.String())
+			// Redirect to the same URL without the ?ussy_share= param so the
+			// browser lands on the clean URL with the session cookie set.
+			// ap.cleanRedirectURL reconstructs the full URL from X-Forwarded-*
+			// headers when called through Caddy's forward_auth.
+			w.Header().Set("Location", ap.cleanRedirectURL(r))
 			w.WriteHeader(http.StatusFound)
 			return
 		}
@@ -145,9 +150,22 @@ func (ap *AuthProxy) Handler() http.Handler {
 	})
 }
 
-// extractVMName extracts the VM name from a hostname.
-// e.g., "myvm.ussy.host" -> "myvm"
-func (ap *AuthProxy) extractVMName(host string) string {
+// extractVMName extracts the VM name from the request's host.
+//
+// When the request arrives directly (tests, local calls) the VM hostname is
+// in r.Host.  When called through Caddy's forward_auth directive, r.Host is
+// the auth proxy's own address and the real client-facing hostname is in the
+// X-Forwarded-Host header set by Caddy — so we fall back to that.
+func (ap *AuthProxy) extractVMName(r *http.Request) string {
+	if name := ap.vmNameFromHost(r.Host); name != "" {
+		return name
+	}
+	return ap.vmNameFromHost(r.Header.Get("X-Forwarded-Host"))
+}
+
+// vmNameFromHost extracts the VM subdomain label from a bare hostname string.
+// e.g., "myvm.ussy.host" -> "myvm", "" or non-matching -> ""
+func (ap *AuthProxy) vmNameFromHost(host string) string {
 	// Strip port if present
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		host = host[:idx]
@@ -164,6 +182,59 @@ func (ap *AuthProxy) extractVMName(host string) string {
 	}
 
 	return name
+}
+
+// extractShareToken returns the ussy_share query-parameter value, checking
+// both the direct URL (used in tests / direct calls) and the X-Forwarded-Uri
+// header that Caddy's forward_auth populates with the original request URI.
+func (ap *AuthProxy) extractShareToken(r *http.Request) string {
+	if token := r.URL.Query().Get("ussy_share"); token != "" {
+		return token
+	}
+	if fu := r.Header.Get("X-Forwarded-Uri"); fu != "" {
+		if u, err := url.ParseRequestURI(fu); err == nil {
+			return u.Query().Get("ussy_share")
+		}
+	}
+	return ""
+}
+
+// cleanRedirectURL builds the redirect URL after stripping ?ussy_share=.
+//
+// Direct calls (tests): scheme/host come from r.URL; path+query from r.URL.
+// Caddy forward_auth calls: scheme from X-Forwarded-Proto, host from
+// X-Forwarded-Host, path+query from X-Forwarded-Uri.
+func (ap *AuthProxy) cleanRedirectURL(r *http.Request) string {
+	// Scheme
+	scheme := r.URL.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+		scheme = p
+	}
+
+	// Host
+	host := r.Host
+	if fh := r.Header.Get("X-Forwarded-Host"); fh != "" {
+		host = fh
+	}
+
+	// Path + query (strip ussy_share)
+	rawURI := r.URL.RequestURI()
+	if fu := r.Header.Get("X-Forwarded-Uri"); fu != "" {
+		rawURI = fu
+	}
+
+	u, _ := url.ParseRequestURI(rawURI)
+	if u == nil {
+		u = &url.URL{Path: "/"}
+	}
+	q := u.Query()
+	q.Del("ussy_share")
+	u.RawQuery = q.Encode()
+
+	return scheme + "://" + host + u.String()
 }
 
 // setAuthHeaders sets the X-Ussy-* headers on the response.

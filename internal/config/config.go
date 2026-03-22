@@ -40,6 +40,11 @@ type Config struct {
 	// AuthProxyAddr is the address the auth proxy listens on (for Caddy forward_auth)
 	AuthProxyAddr string
 
+	// AuthProxyURL is the URL Caddy uses to reach the auth proxy via forward_auth.
+	// Defaults to http://localhost:9876. Only needs to differ from the default when
+	// the auth proxy is on a different host or port than the default.
+	AuthProxyURL string
+
 	// VMM is the hypervisor backend: "firecracker" or "cloudhv"
 	VMM string
 
@@ -124,6 +129,7 @@ func DefaultConfig() *Config {
 		CaddyAdminAddr:      envOrDefault("USSYCODE_CADDY_ADMIN", "http://localhost:2019"),
 		MetadataAddr:        envOrDefault("USSYCODE_METADATA_ADDR", ":8083"),
 		AuthProxyAddr:       envOrDefault("USSYCODE_AUTH_PROXY_ADDR", ":9876"),
+		AuthProxyURL:        envOrDefault("USSYCODE_AUTH_PROXY_URL", "http://localhost:9876"),
 		VMM:                 envOrDefault("USSYCODE_VMM", "firecracker"),
 		KernelPath:          envOrDefault("USSYCODE_KERNEL", filepath.Join(dataDir, "vmlinux")),
 		DefaultImage:        envOrDefault("USSYCODE_DEFAULT_IMAGE", "ussyuntu"),
@@ -163,6 +169,7 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.CaddyAdminAddr, "caddy-api", c.CaddyAdminAddr, "Caddy admin API URL")
 	fs.StringVar(&c.MetadataAddr, "metadata-addr", c.MetadataAddr, "Metadata service listen address")
 	fs.StringVar(&c.AuthProxyAddr, "auth-proxy-addr", c.AuthProxyAddr, "Auth proxy listen address (for Caddy forward_auth)")
+	fs.StringVar(&c.AuthProxyURL, "auth-proxy-url", c.AuthProxyURL, "Auth proxy URL Caddy uses for forward_auth (e.g. http://localhost:9876)")
 	fs.StringVar(&c.VMM, "vmm", c.VMM, "Hypervisor backend: firecracker or cloudhv")
 	fs.StringVar(&c.KernelPath, "kernel", c.KernelPath, "Path to guest kernel")
 	fs.StringVar(&c.FirecrackerBin, "firecracker", c.FirecrackerBin, "Path to firecracker binary")

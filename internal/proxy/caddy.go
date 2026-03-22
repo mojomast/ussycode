@@ -19,18 +19,20 @@ import (
 
 // Manager manages Caddy reverse proxy routes for VMs.
 type Manager struct {
-	adminAPI string // Caddy admin API URL (default: http://localhost:2019)
-	domain   string // base domain (e.g., "ussy.host")
-	client   *http.Client
-	logger   *slog.Logger
-	mu       sync.Mutex
-	routes   map[string]string // vmName -> vmIP
+	adminAPI     string // Caddy admin API URL (default: http://localhost:2019)
+	domain       string // base domain (e.g., "ussy.host")
+	authProxyURL string // URL of the auth proxy for Caddy forward_auth (e.g., "http://localhost:9876")
+	client       *http.Client
+	logger       *slog.Logger
+	mu           sync.Mutex
+	routes       map[string]string // vmName -> vmIP
 }
 
 // Config holds configuration for the proxy manager.
 type Config struct {
-	AdminAPI string // Caddy admin API URL
-	Domain   string // base domain for VM subdomains
+	AdminAPI     string // Caddy admin API URL
+	Domain       string // base domain for VM subdomains
+	AuthProxyURL string // URL of the auth proxy for Caddy forward_auth (e.g., "http://localhost:9876")
 }
 
 // NewManager creates a new Caddy proxy manager.
@@ -41,8 +43,9 @@ func NewManager(cfg *Config, logger *slog.Logger) *Manager {
 	}
 
 	return &Manager{
-		adminAPI: adminAPI,
-		domain:   cfg.Domain,
+		adminAPI:     adminAPI,
+		domain:       cfg.Domain,
+		authProxyURL: cfg.AuthProxyURL,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -66,6 +69,45 @@ func (m *Manager) AddRoute(ctx context.Context, vmName, vmIP string, port int) e
 
 	m.logger.Info("adding proxy route", "hostname", hostname, "upstream", upstream)
 
+	// Build the subroute handler chain: auth check → header injection → upstream proxy.
+	// forward_auth is only added when an auth proxy URL is configured; skipping it
+	// in dev/test mode (authProxyURL == "") means routes work without Caddy auth.
+	subrouteHandles := []caddyHandler{}
+
+	if m.authProxyURL != "" {
+		subrouteHandles = append(subrouteHandles, caddyHandler{
+			Handler: "forward_auth",
+			URI:     m.authProxyURL,
+			// Copy auth-context headers from the auth proxy response into
+			// the upstream request so the VM sees who is calling it.
+			CopyHeaders: []string{
+				"X-Ussy-Auth-Mode",
+				"X-Ussy-VM",
+				"X-Ussy-VM-ID",
+				"X-Ussy-UserID",
+				"X-Ussy-Handle",
+			},
+		})
+	}
+
+	subrouteHandles = append(subrouteHandles,
+		caddyHandler{
+			Handler: "headers",
+			Request: &caddyHeaderOps{
+				Set: map[string][]string{
+					"X-Forwarded-Proto": {"https"},
+					"X-Forwarded-Host":  {hostname},
+				},
+			},
+		},
+		caddyHandler{
+			Handler: "reverse_proxy",
+			Upstreams: []caddyUpstream{
+				{Dial: upstream},
+			},
+		},
+	)
+
 	// Build a Caddy route config
 	route := caddyRoute{
 		ID: routeID(vmName),
@@ -76,25 +118,7 @@ func (m *Manager) AddRoute(ctx context.Context, vmName, vmIP string, port int) e
 			{
 				Handler: "subroute",
 				Routes: []caddySubroute{
-					{
-						Handle: []caddyHandler{
-							{
-								Handler: "headers",
-								Request: &caddyHeaderOps{
-									Set: map[string][]string{
-										"X-Forwarded-Proto": {"https"},
-										"X-Forwarded-Host":  {hostname},
-									},
-								},
-							},
-							{
-								Handler: "reverse_proxy",
-								Upstreams: []caddyUpstream{
-									{Dial: upstream},
-								},
-							},
-						},
-					},
+					{Handle: subrouteHandles},
 				},
 			},
 		},
@@ -427,12 +451,15 @@ type caddyMatch struct {
 }
 
 type caddyHandler struct {
-	Handler    string          `json:"handler"`
-	Routes     []caddySubroute `json:"routes,omitempty"`
-	Upstreams  []caddyUpstream `json:"upstreams,omitempty"`
-	StatusCode int             `json:"status_code,omitempty"`
-	Body       string          `json:"body,omitempty"`
-	Request    *caddyHeaderOps `json:"request,omitempty"`
+	Handler     string          `json:"handler"`
+	Routes      []caddySubroute `json:"routes,omitempty"`
+	Upstreams   []caddyUpstream `json:"upstreams,omitempty"`
+	StatusCode  int             `json:"status_code,omitempty"`
+	Body        string          `json:"body,omitempty"`
+	Request     *caddyHeaderOps `json:"request,omitempty"`
+	// forward_auth fields
+	URI         string          `json:"uri,omitempty"`
+	CopyHeaders []string        `json:"copy_headers,omitempty"`
 }
 
 type caddySubroute struct {

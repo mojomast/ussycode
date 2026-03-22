@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"database/sql"
-	"errors"
-	"fmt"
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -58,8 +58,9 @@ func generateTestKey(t *testing.T) (gossh.Signer, gossh.PublicKey) {
 	return signer, signer.PublicKey()
 }
 
-// TestRegistrationPersistence tests that after a user registers via SSH,
-// they can reconnect and be recognized (not shown registration again).
+// TestRegistrationPersistence verifies the hardened auth flow:
+// unknown users are rejected when routussy is not configured, while
+// pre-registered users can reconnect and are recognized normally.
 func TestRegistrationPersistence(t *testing.T) {
 	database := setupTestDB(t)
 
@@ -107,94 +108,63 @@ func TestRegistrationPersistence(t *testing.T) {
 	fingerprint := gossh.FingerprintSHA256(clientPubKey)
 	t.Logf("client fingerprint: %s", fingerprint)
 
-	// --- Connection 1: Registration ---
-	t.Log("=== Connection 1: Registration ===")
-
 	config := &gossh.ClientConfig{
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(clientSigner)},
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
 		Timeout:         5 * time.Second,
 	}
 
+	// Unknown users should be rejected when routussy is not configured.
+	if _, err := gossh.Dial("tcp", addr, config); err == nil {
+		t.Fatal("expected unknown user to be rejected")
+	} else {
+		t.Logf("unknown user rejected as expected: %v", err)
+	}
+
+	// Seed a local account with the same SSH key.
+	handle := "testuser123"
+	user, err := database.CreateUser(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := database.AddSSHKey(context.Background(), user.ID, strings.TrimSpace(string(gossh.MarshalAuthorizedKey(clientPubKey))), fingerprint, "test"); err != nil {
+		t.Fatalf("AddSSHKey: %v", err)
+	}
+
+	// --- Connection 2: Should be recognized ---
 	conn, err := gossh.Dial("tcp", addr, config)
 	if err != nil {
-		t.Fatalf("dial (connection 1): %v", err)
+		t.Fatalf("dial (known user): %v", err)
 	}
+	defer conn.Close()
 
 	session, err := conn.NewSession()
 	if err != nil {
-		conn.Close()
-		t.Fatalf("new session (connection 1): %v", err)
+		t.Fatalf("new session (known user): %v", err)
 	}
+	defer session.Close()
 
-	// Set up pseudo-terminal for interactive session
-	modes := gossh.TerminalModes{
-		gossh.ECHO: 0,
-	}
+	modes := gossh.TerminalModes{gossh.ECHO: 0}
 	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
-		session.Close()
-		conn.Close()
-		t.Fatalf("request pty: %v", err)
-	}
-
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		session.Close()
-		conn.Close()
-		t.Fatalf("stdin pipe: %v", err)
+		t.Fatalf("request pty (known user): %v", err)
 	}
 
 	stdout, err := session.StdoutPipe()
 	if err != nil {
-		session.Close()
-		conn.Close()
-		t.Fatalf("stdout pipe: %v", err)
+		t.Fatalf("stdout pipe (known user): %v", err)
 	}
 
 	if err := session.Shell(); err != nil {
-		session.Close()
-		conn.Close()
-		t.Fatalf("shell: %v", err)
+		t.Fatalf("shell (known user): %v", err)
 	}
 
-	// Read until we see the handle prompt
 	buf := make([]byte, 8192)
 	var output strings.Builder
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("timeout waiting for registration prompt. Got so far:\n%s", output.String())
-		default:
-		}
-
-		// Set a read deadline on the underlying session
-		n, err := stdout.Read(buf)
-		if err != nil {
-			t.Fatalf("read error during registration: %v (got so far: %s)", err, output.String())
-		}
-		output.Write(buf[:n])
-		if strings.Contains(output.String(), "handle:") || strings.Contains(output.String(), "handle: ") {
-			break
-		}
-	}
-
-	t.Logf("registration prompt received")
-
-	// Type a handle — use \r for PTY mode (terminal expects carriage return)
-	handle := "testuser123"
-	fmt.Fprintf(stdin, "%s\r", handle)
-	t.Logf("sent handle: %s", handle)
-
-	// Read the response — should see "welcome" or "you're in"
-	time.Sleep(500 * time.Millisecond)
-	output.Reset()
-	readDeadline := time.After(5 * time.Second)
-	for {
-		select {
-		case <-readDeadline:
-			t.Logf("output after handle: %s", output.String())
-			goto doneReading1
+			goto doneReading
 		default:
 		}
 		n, err := stdout.Read(buf)
@@ -202,101 +172,24 @@ func TestRegistrationPersistence(t *testing.T) {
 			break
 		}
 		output.Write(buf[:n])
-		if strings.Contains(output.String(), "you're in") || strings.Contains(output.String(), "ussy>") {
-			break
-		}
-	}
-doneReading1:
-	t.Logf("registration output: %s", output.String())
-
-	if !strings.Contains(output.String(), "you're in") && !strings.Contains(output.String(), "welcome") {
-		t.Errorf("expected welcome message after registration, got:\n%s", output.String())
-	}
-
-	// Close the first connection
-	session.Close()
-	conn.Close()
-	time.Sleep(300 * time.Millisecond)
-
-	// --- Verify DB state ---
-	t.Log("=== Verifying DB state ===")
-
-	user, err := database.UserByFingerprint(context.Background(), fingerprint)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("CRITICAL BUG: User not found in DB after registration! fingerprint=%s", fingerprint)
-		}
-		t.Fatalf("UserByFingerprint error: %v", err)
-	}
-	t.Logf("DB verification: found user id=%d handle=%s", user.ID, user.Handle)
-
-	if user.Handle != handle {
-		t.Errorf("expected handle %q, got %q", handle, user.Handle)
-	}
-
-	// --- Connection 2: Should be recognized ---
-	t.Log("=== Connection 2: Should be recognized ===")
-
-	conn2, err := gossh.Dial("tcp", addr, config)
-	if err != nil {
-		t.Fatalf("dial (connection 2): %v", err)
-	}
-	defer conn2.Close()
-
-	session2, err := conn2.NewSession()
-	if err != nil {
-		t.Fatalf("new session (connection 2): %v", err)
-	}
-	defer session2.Close()
-
-	if err := session2.RequestPty("xterm", 80, 40, modes); err != nil {
-		t.Fatalf("request pty (connection 2): %v", err)
-	}
-
-	stdout2, err := session2.StdoutPipe()
-	if err != nil {
-		t.Fatalf("stdout pipe (connection 2): %v", err)
-	}
-
-	if err := session2.Shell(); err != nil {
-		t.Fatalf("shell (connection 2): %v", err)
-	}
-
-	// Read the initial output — should see "welcome back" NOT "welcome to the ussyverse"
-	var output2 strings.Builder
-	deadline2 := time.After(5 * time.Second)
-	for {
-		select {
-		case <-deadline2:
-			goto doneReading2
-		default:
-		}
-		n, err := stdout2.Read(buf)
-		if err != nil {
-			break
-		}
-		output2.Write(buf[:n])
-		// We expect either "welcome back" (existing user) or "ussyverse" (registration)
-		if strings.Contains(output2.String(), "welcome back") || strings.Contains(output2.String(), "ussyverse") || strings.Contains(output2.String(), "ussy>") {
-			// Give a bit more time to get the full message
+		if strings.Contains(output.String(), "welcome back") || strings.Contains(output.String(), "ussy>") {
 			time.Sleep(300 * time.Millisecond)
-			n, _ = stdout2.Read(buf)
+			n, _ = stdout.Read(buf)
 			if n > 0 {
-				output2.Write(buf[:n])
+				output.Write(buf[:n])
 			}
 			break
 		}
 	}
-doneReading2:
-	reconnectOutput := output2.String()
-	t.Logf("reconnect output:\n%s", reconnectOutput)
+doneReading:
+	reconnectOutput := output.String()
+	t.Logf("known-user output:\n%s", reconnectOutput)
 
 	if strings.Contains(reconnectOutput, "welcome to the ussyverse") || strings.Contains(reconnectOutput, "new here") {
-		t.Error("BUG: User shown registration flow on reconnect — user was not persisted!")
+		t.Fatal("known user was incorrectly shown registration flow")
 	}
-
-	if strings.Contains(reconnectOutput, "welcome back") {
-		t.Log("SUCCESS: User recognized on reconnect")
+	if !strings.Contains(reconnectOutput, "welcome back") {
+		t.Fatalf("expected welcome-back output, got:\n%s", reconnectOutput)
 	}
 }
 
@@ -329,4 +222,92 @@ func TestDBWriteReadCrossConnection(t *testing.T) {
 		t.Errorf("expected user ID %d, got %d", user.ID, found.ID)
 	}
 	t.Logf("read back user: id=%d handle=%s — cross-connection reads work!", found.ID, found.Handle)
+}
+
+func TestEnsureLocalUserForRoutussy(t *testing.T) {
+	database := setupTestDB(t)
+
+	hostKeyFile, err := os.CreateTemp("", "ussycode-hostkey-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostKeyPath := hostKeyFile.Name()
+	hostKeyFile.Close()
+	os.Remove(hostKeyPath)
+	t.Cleanup(func() { os.Remove(hostKeyPath) })
+
+	_, clientPubKey := generateTestKey(t)
+	fingerprint := gossh.FingerprintSHA256(clientPubKey)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != "/ussycode/user-by-fingerprint" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"user_id":        "12345",
+			"discord_id":     "Test User#0001",
+			"budget_cents":   1000,
+			"spent_cents":    0,
+			"ssh_pubkey":     strings.TrimSpace(string(gossh.MarshalAuthorizedKey(clientPubKey))),
+			"api_key_prefix": "ussycode",
+		})
+	}))
+	defer server.Close()
+
+	gw, err := New(database, nil, nil, nil, hostKeyPath, "127.0.0.1:0", "test.local")
+	if err != nil {
+		t.Fatalf("create gateway: %v", err)
+	}
+	gw.RoutussyURL = server.URL
+	gw.RoutussyInternalKey = "test-secret"
+
+	user, err := gw.ensureLocalUserForRoutussy(context.Background(), fingerprint, clientPubKey)
+	if err != nil {
+		t.Fatalf("ensureLocalUserForRoutussy: %v", err)
+	}
+	if user == nil {
+		t.Fatal("expected provisioned user")
+	}
+	if user.Handle == "" {
+		t.Fatal("expected non-empty handle")
+	}
+
+	found, err := database.UserByFingerprint(context.Background(), fingerprint)
+	if err != nil {
+		t.Fatalf("UserByFingerprint after provision: %v", err)
+	}
+	if found.ID != user.ID {
+		t.Fatalf("expected same user ID, got %d vs %d", found.ID, user.ID)
+	}
+
+	keys, err := database.SSHKeysByUser(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("SSHKeysByUser: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 ssh key, got %d", len(keys))
+	}
+	if keys[0].Fingerprint != fingerprint {
+		t.Fatalf("expected fingerprint %s, got %s", fingerprint, keys[0].Fingerprint)
+	}
+}
+
+func TestSanitizeHandle(t *testing.T) {
+	cases := map[string]string{
+		"Test User#0001": "test-user-0001",
+		"123abc":         "u-123abc",
+		"___":            "",
+		"a":              "a1",
+	}
+	for in, want := range cases {
+		got := sanitizeHandle(in)
+		if got != want {
+			t.Fatalf("sanitizeHandle(%q)=%q want %q", in, got, want)
+		}
+	}
 }

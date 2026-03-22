@@ -42,6 +42,76 @@ fetch_metadata() {
     return 1
 }
 
+mask_to_prefix() {
+    case "$1" in
+        255.255.255.255) echo 32 ;;
+        255.255.255.254) echo 31 ;;
+        255.255.255.252) echo 30 ;;
+        255.255.255.248) echo 29 ;;
+        255.255.255.240) echo 28 ;;
+        255.255.255.224) echo 27 ;;
+        255.255.255.192) echo 26 ;;
+        255.255.255.128) echo 25 ;;
+        255.255.255.0) echo 24 ;;
+        255.255.254.0) echo 23 ;;
+        255.255.252.0) echo 22 ;;
+        255.255.248.0) echo 21 ;;
+        255.255.240.0) echo 20 ;;
+        255.255.224.0) echo 19 ;;
+        255.255.192.0) echo 18 ;;
+        255.255.128.0) echo 17 ;;
+        255.255.0.0) echo 16 ;;
+        255.254.0.0) echo 15 ;;
+        255.252.0.0) echo 14 ;;
+        255.248.0.0) echo 13 ;;
+        255.240.0.0) echo 12 ;;
+        255.224.0.0) echo 11 ;;
+        255.192.0.0) echo 10 ;;
+        255.128.0.0) echo 9 ;;
+        255.0.0.0) echo 8 ;;
+        254.0.0.0) echo 7 ;;
+        252.0.0.0) echo 6 ;;
+        248.0.0.0) echo 5 ;;
+        240.0.0.0) echo 4 ;;
+        224.0.0.0) echo 3 ;;
+        192.0.0.0) echo 2 ;;
+        128.0.0.0) echo 1 ;;
+        0.0.0.0) echo 0 ;;
+        *) echo 24 ;;
+    esac
+}
+
+configure_network_from_cmdline() {
+    local ip_arg iface actual_iface ip_addr gateway mask prefix
+    ip_arg=$(sed -n 's/.*\bip=\([^ ]*\).*/\1/p' /proc/cmdline | head -n1)
+    [ -n "$ip_arg" ] || return 0
+
+    IFS=':' read -r ip_addr _ gateway mask _ iface _ <<EOF
+$ip_arg
+EOF
+
+    for _try in 1 2 3 4 5; do
+        for candidate in /sys/class/net/*; do
+            candidate=$(basename "$candidate")
+            [ "$candidate" = "lo" ] && continue
+            actual_iface="$candidate"
+            break
+        done
+        [ -n "$actual_iface" ] && break
+        sleep 1
+    done
+
+    [ -n "$actual_iface" ] || return 0
+    prefix=$(mask_to_prefix "$mask")
+
+    log "Configuring guest network from kernel cmdline on ${actual_iface}: ${ip_addr}/${prefix} via ${gateway}"
+    ip link set dev "$actual_iface" up 2>/dev/null || true
+    ip addr replace "$ip_addr/$prefix" dev "$actual_iface" 2>/dev/null || true
+    ip route replace default via "$gateway" dev "$actual_iface" 2>/dev/null || true
+}
+
+configure_network_from_cmdline
+
 # ── SSH authorized keys (CRITICAL -- runs first) ────────────────────
 # This must succeed for the user to be able to SSH into the VM.
 # It runs before the data-disk section so a mount failure cannot block it.

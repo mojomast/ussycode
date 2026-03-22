@@ -10,8 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"sync"
 )
@@ -171,38 +169,26 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func (s *Server) startRoutedServer(ctx context.Context) error {
-	upstream, err := url.Parse("http://127.0.0.1" + s.listenAddr)
-	if err != nil {
-		return fmt.Errorf("parse metadata upstream: %w", err)
-	}
-
-	proxy := httputil.NewSingleHostReverseProxy(upstream)
-	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.URL.Scheme = upstream.Scheme
-		r.URL.Host = upstream.Host
-		proxy.ServeHTTP(w, r)
-	})
-
+	// In production we expose the metadata service internally on a local port
+	// (usually :8083) and rely on nftables to redirect guest traffic destined
+	// for 169.254.169.254:80 to that port.
+	//
+	// We intentionally do not bind 169.254.169.254:80 on the host. On GCP, that
+	// address is reserved for the platform metadata service and host DNS
+	// resolution; binding or assigning it locally interferes with external DNS
+	// and breaks outbound operations like ACME certificate issuance.
 	routedSrv := &http.Server{Addr: s.listenAddr, Handler: s.Handler()}
-	publicSrv := &http.Server{Addr: "169.254.169.254:80", Handler: proxyHandler}
 
 	go func() {
 		<-ctx.Done()
-		_ = publicSrv.Shutdown(context.Background())
 		_ = routedSrv.Shutdown(context.Background())
 	}()
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 1)
 	go func() {
-		s.logger.Info("metadata server starting", "addr", routedSrv.Addr)
+		s.logger.Info("metadata server starting", "addr", routedSrv.Addr, "mode", "nft-redirect")
 		if err := routedSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("metadata server: %w", err)
-		}
-	}()
-	go func() {
-		s.logger.Info("metadata public endpoint starting", "addr", publicSrv.Addr)
-		if err := publicSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("metadata public endpoint: %w", err)
 		}
 	}()
 

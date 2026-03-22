@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -120,8 +122,11 @@ func main() {
 
 	// Initialize proxy manager (optional -- needs Caddy running)
 	proxyMgr := proxy.NewManager(&proxy.Config{
-		AdminAPI: cfg.CaddyAdminAddr,
-		Domain:   cfg.Domain,
+		AdminAPI:    cfg.CaddyAdminAddr,
+		Domain:      cfg.Domain,
+		APIDomain:   cfg.APIDomain,
+		DNSProvider: cfg.DNSProvider,
+		DNSAPIToken: cfg.DNSAPIToken,
 	}, logger.With("component", "proxy"))
 	if cfg.CaddyAdminAddr == "" {
 		log.Println("WARNING: Caddy admin API disabled; browser routes will not be created.")
@@ -196,6 +201,66 @@ func main() {
 	// Graceful shutdown context
 	shutdownCtx, shutdownCancel := context.WithCancel(ctx)
 	defer shutdownCancel()
+
+	// Reconcile metadata + proxy state for any VMs already marked running.
+	// This matters after service restarts because Caddy's dynamic config is in-memory.
+	if vmManager != nil {
+		if runningVMs, err := database.RunningVMs(ctx); err != nil {
+			logger.Warn("failed to load running VMs for reconciliation", "error", err)
+		} else {
+			for _, existingVM := range runningVMs {
+				user, err := database.UserByID(ctx, existingVM.UserID)
+				if err != nil {
+					logger.Warn("failed to load VM owner during reconciliation", "vm", existingVM.Name, "user_id", existingVM.UserID, "error", err)
+					continue
+				}
+
+				sshKeys := []string{}
+				if keys, err := database.SSHKeysByUser(ctx, user.ID); err == nil {
+					for _, k := range keys {
+						sshKeys = append(sshKeys, k.PublicKey)
+					}
+				} else {
+					logger.Warn("failed to load user SSH keys during reconciliation", "vm", existingVM.Name, "user_id", user.ID, "error", err)
+				}
+				if pubKey, err := vmManager.UserPublicKey(user.ID); err == nil && pubKey != "" {
+					sshKeys = append(sshKeys, pubKey)
+				} else if err != nil {
+					logger.Warn("failed to load per-user gateway key during reconciliation", "vm", existingVM.Name, "user_id", user.ID, "error", err)
+				}
+
+				envVars := map[string]string{}
+				if cfg.RoutussyURL != "" {
+					if fp, err := database.FingerprintByUser(ctx, user.ID); err == nil && fp != "" {
+						envVars["OPENCODE_API_KEY"] = "ussycode-fp:" + fp
+						envVars["OPENCODE_BASE_URL"] = strings.TrimRight(cfg.RoutussyURL, "/") + "/v1"
+					}
+				}
+				envVars["USSYCODE_PUBLIC_DOMAIN"] = cfg.Domain
+				envVars["USSYCODE_VM_NAME"] = existingVM.Name
+
+				if existingVM.IPAddress.Valid && existingVM.IPAddress.String != "" {
+					metaSrv.RegisterVM(existingVM.IPAddress.String, &gateway.VMMetadata{
+						InstanceID: fmt.Sprintf("vm-%d", existingVM.ID),
+						LocalIPv4:  existingVM.IPAddress.String,
+						Hostname:   existingVM.Name,
+						UserID:     user.ID,
+						UserHandle: user.Handle,
+						VMName:     existingVM.Name,
+						Image:      existingVM.Image,
+						SSHKeys:    sshKeys,
+						Gateway:    "10.0.0.1",
+						EnvVars:    envVars,
+					})
+					if proxyMgr != nil {
+						if err := proxyMgr.UpdateRoute(ctx, existingVM.Name, existingVM.IPAddress.String, 8080); err != nil {
+							logger.Warn("failed to reconcile proxy route", "vm", existingVM.Name, "ip", existingVM.IPAddress.String, "error", err)
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// Start metadata service in background
 	go func() {

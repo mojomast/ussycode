@@ -412,6 +412,10 @@ func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef
 		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
 		return fmt.Errorf("copy rootfs: %w", err)
 	}
+	if err := os.Chmod(vmRootfs, 0644); err != nil {
+		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+		return fmt.Errorf("chmod rootfs: %w", err)
+	}
 
 	// Grow the rootfs copy to the configured size (base image is shrunk to minimum)
 	rootfsSizeBytes := int64(m.defaultRootfsGB) * 1024 * 1024 * 1024
@@ -434,6 +438,10 @@ func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef
 			return fmt.Errorf("create data disk: %w", err)
 		}
 	}
+	if err := os.Chmod(dataDiskPath, 0644); err != nil {
+		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+		return fmt.Errorf("chmod data disk: %w", err)
+	}
 
 	// 4. Allocate network (TAP device + IP)
 	vmIDStr := fmt.Sprintf("%d", vmID)
@@ -448,6 +456,11 @@ func (m *Manager) CreateAndStart(ctx context.Context, vmID int64, name, imageRef
 	}
 
 	// 5. Boot the VM
+	if err := m.prepareJailerArtifacts(vmRootfs, dataDiskPath); err != nil {
+		m.network.ReleaseNetwork(vmIDStr, netCfg.TapDevice)
+		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+		return fmt.Errorf("prepare jailer artifacts: %w", err)
+	}
 	if fw, ok := m.network.(*NetworkManager); ok {
 		if err := fw.firewall.AddVMRules(ctx, vmIDStr, netCfg.TapDevice, netCfg.GuestIP, fw.bridge); err != nil {
 			m.network.ReleaseNetwork(vmIDStr, netCfg.TapDevice)
@@ -542,6 +555,11 @@ func (m *Manager) Start(ctx context.Context, vmID int64, name, image string, vcp
 	}
 
 	// Boot the VM
+	if err := m.prepareJailerArtifacts(vmRootfs, dataDiskPath); err != nil {
+		m.network.ReleaseNetwork(vmIDStr, netCfg.TapDevice)
+		m.db.UpdateVMStatus(ctx, vmID, "error", nil, nil, nil, nil)
+		return fmt.Errorf("prepare jailer artifacts: %w", err)
+	}
 	if fw, ok := m.network.(*NetworkManager); ok {
 		if err := fw.firewall.AddVMRules(ctx, vmIDStr, netCfg.TapDevice, netCfg.GuestIP, fw.bridge); err != nil {
 			m.network.ReleaseNetwork(vmIDStr, netCfg.TapDevice)
@@ -856,7 +874,7 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	out, err := os.Create(dst)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
@@ -866,13 +884,16 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	return out.Sync()
+	if err := out.Sync(); err != nil {
+		return err
+	}
+	return out.Chmod(0644)
 }
 
 // createEmptyExt4 creates an empty ext4 filesystem of the given size.
 func createEmptyExt4(ctx context.Context, path string, sizeBytes int64) error {
 	// Create sparse file
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
@@ -880,7 +901,9 @@ func createEmptyExt4(ctx context.Context, path string, sizeBytes int64) error {
 		f.Close()
 		return err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
 
 	// Format as ext4
 	cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-q", path)
@@ -890,6 +913,28 @@ func createEmptyExt4(ctx context.Context, path string, sizeBytes int64) error {
 	}
 
 	return nil
+}
+
+func (m *Manager) prepareJailerArtifacts(paths ...string) error {
+	if m.fc == nil || m.fc.jailer == nil || !m.fc.jailer.Enabled() {
+		return nil
+	}
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if err := os.Chown(path, m.fc.jailer.UID, m.fc.jailer.GID); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, 0600); err != nil {
+			return err
+		}
+		dir := filepath.Dir(path)
+		if err := os.Chmod(dir, 0755); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(m.fc.jailer.ChrootBaseDir, 0755)
 }
 
 // EnsureUserKey generates an ed25519 keypair for the given user if one

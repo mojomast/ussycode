@@ -471,6 +471,33 @@ func (d *DB) VMByName(ctx context.Context, name string) (*VM, error) {
 	return &vm, nil
 }
 
+// RunningVMs returns all VMs currently marked as running.
+func (d *DB) RunningVMs(ctx context.Context) ([]*VM, error) {
+	var vms []*VM
+	err := d.ReadTx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx,
+			`SELECT id, user_id, name, status, image, vcpu, memory_mb, disk_gb,
+			        tap_device, ip_address, mac_address, pid, created_at, updated_at
+			 FROM vms WHERE status = 'running' ORDER BY created_at DESC`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var vm VM
+			if err := scanVM(rows, &vm); err != nil {
+				return err
+			}
+			vms = append(vms, &vm)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return vms, nil
+}
+
 // HasShareAccess checks if a user has share-based access to a VM.
 func (d *DB) HasShareAccess(ctx context.Context, vmID, userID int64) (bool, error) {
 	var has bool

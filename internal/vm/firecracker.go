@@ -129,14 +129,33 @@ func NewFirecrackerBackend(firecrackerBin, kernelPath, dataDir string, logger *s
 
 // StartVM boots a new Firecracker microVM with the given configuration.
 func (fb *FirecrackerBackend) StartVM(ctx context.Context, opts *VMStartOptions) (*FirecrackerVM, error) {
-	// Create per-VM runtime directory
+	// Create per-VM runtime directory. When using the jailer, the socket path
+	// must be relative to the jailed rootfs (for example /run/firecracker.sock),
+	// otherwise Firecracker tries to bind a nested absolute path that does not
+	// exist inside the chroot and exits before creating the API socket.
 	vmRunDir := filepath.Join(fb.dataDir, "run", opts.VMID)
 	if err := os.MkdirAll(vmRunDir, 0700); err != nil {
 		return nil, fmt.Errorf("create vm run dir: %w", err)
 	}
 
 	socketPath := filepath.Join(vmRunDir, "firecracker.sock")
+	if fb.jailer.Enabled() {
+		socketPath = "/run/firecracker.sock"
+	}
 	logPath := filepath.Join(vmRunDir, "firecracker.log")
+
+	// Remove stale jailer chroot state before starting.
+	// If a prior stop/crash leaves files behind (for example /dev/net/tun),
+	// the jailer can fail during startup with "File exists" while recreating
+	// device nodes inside the chroot.
+	if fb.jailer.Enabled() {
+		staleChrootDir := filepath.Join(fb.jailer.ChrootBaseDir, "firecracker", opts.VMID)
+		if staleChrootDir != "" && staleChrootDir != "/" {
+			if err := os.RemoveAll(staleChrootDir); err != nil {
+				return nil, fmt.Errorf("remove stale jailer chroot %s: %w", staleChrootDir, err)
+			}
+		}
+	}
 
 	// Remove stale socket if it exists
 	os.Remove(socketPath)

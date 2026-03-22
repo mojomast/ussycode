@@ -19,18 +19,24 @@ import (
 
 // Manager manages Caddy reverse proxy routes for VMs.
 type Manager struct {
-	adminAPI string // Caddy admin API URL (default: http://localhost:2019)
-	domain   string // base domain (e.g., "ussy.host")
-	client   *http.Client
-	logger   *slog.Logger
-	mu       sync.Mutex
-	routes   map[string]string // vmName -> vmIP
+	adminAPI    string // Caddy admin API URL (default: http://localhost:2019)
+	domain      string // base domain (e.g., "ussy.host")
+	apiDomain   string // public API hostname (e.g. api.ussy.host)
+	dnsProvider string // ACME DNS provider module name
+	dnsAPIToken string // ACME DNS provider API token
+	client      *http.Client
+	logger      *slog.Logger
+	mu          sync.Mutex
+	routes      map[string]string // vmName -> vmIP
 }
 
 // Config holds configuration for the proxy manager.
 type Config struct {
-	AdminAPI string // Caddy admin API URL
-	Domain   string // base domain for VM subdomains
+	AdminAPI    string // Caddy admin API URL
+	Domain      string // base domain for VM subdomains
+	APIDomain   string // public hostname for the API
+	DNSProvider string // DNS provider name for ACME DNS challenge
+	DNSAPIToken string // DNS provider API token for ACME DNS challenge
 }
 
 // NewManager creates a new Caddy proxy manager.
@@ -41,8 +47,11 @@ func NewManager(cfg *Config, logger *slog.Logger) *Manager {
 	}
 
 	return &Manager{
-		adminAPI: adminAPI,
-		domain:   cfg.Domain,
+		adminAPI:    adminAPI,
+		domain:      cfg.Domain,
+		apiDomain:   cfg.APIDomain,
+		dnsProvider: cfg.DNSProvider,
+		dnsAPIToken: cfg.DNSAPIToken,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -173,9 +182,47 @@ func (m *Manager) UpdateRoute(ctx context.Context, vmName, vmIP string, port int
 // EnsureBaseConfig pushes a base Caddy configuration that sets up the
 // wildcard TLS certificate and default server. Call this once at startup.
 func (m *Manager) EnsureBaseConfig(ctx context.Context, email string) error {
-	m.logger.Info("configuring Caddy base config", "domain", m.domain, "email", email)
+	m.logger.Info("configuring Caddy base config", "domain", m.domain, "api_domain", m.apiDomain, "email", email)
 
 	wildcardDomain := fmt.Sprintf("*.%s", m.domain)
+	providerName := m.dnsProvider
+	if providerName == "" {
+		providerName = "cloudflare"
+	}
+
+	routes := []caddyRoute{}
+
+	if m.apiDomain != "" {
+		routes = append(routes, caddyRoute{
+			Match: []caddyMatch{{Host: []string{m.apiDomain}}},
+			Handle: []caddyHandler{{
+				Handler: "subroute",
+				Routes: []caddySubroute{{
+					Handle: []caddyHandler{{
+						Handler: "reverse_proxy",
+						Upstreams: []caddyUpstream{{Dial: "127.0.0.1:8080"}},
+					}},
+				}},
+			}},
+		})
+	}
+
+	routes = append(routes,
+		caddyRoute{
+			Match: []caddyMatch{{Host: []string{m.domain}}},
+			Handle: []caddyHandler{{
+				Handler: "subroute",
+				Routes: []caddySubroute{{
+					Handle: []caddyHandler{{
+						Handler: "reverse_proxy",
+						Upstreams: []caddyUpstream{{Dial: "127.0.0.1:9090"}},
+					}},
+				}},
+			}},
+		},
+	)
+
+	subjects := append([]string{m.domain, wildcardDomain}, nonEmpty(m.apiDomain)...)
 
 	cfg := caddyConfig{
 		Apps: caddyApps{
@@ -183,26 +230,18 @@ func (m *Manager) EnsureBaseConfig(ctx context.Context, email string) error {
 				Servers: map[string]caddyServer{
 					"srv0": {
 						Listen: []string{":443", ":80"},
-						Routes: []caddyRoute{
-							// Default 404 handler for unmatched subdomains
-							{
-								Handle: []caddyHandler{
-									{
-										Handler:    "static_response",
-										StatusCode: 404,
-										Body:       "no such environment\n",
-									},
-								},
-							},
-						},
+						Routes: routes,
 					},
 				},
 			},
 			TLS: &caddyTLS{
+				Certificates: &caddyCertificates{
+					Automate: subjects,
+				},
 				Automation: caddyTLSAutomation{
 					Policies: []caddyTLSPolicy{
 						{
-							Subjects: []string{m.domain, wildcardDomain},
+							Subjects: subjects,
 							Issuers: []caddyTLSIssuer{
 								{
 									Module: "acme",
@@ -210,7 +249,8 @@ func (m *Manager) EnsureBaseConfig(ctx context.Context, email string) error {
 									Challenges: &caddyACMEChallenges{
 										DNS: &caddyDNSChallenge{
 											Provider: caddyDNSProvider{
-												Name: "cloudflare",
+												Name:     providerName,
+												APIToken: m.dnsAPIToken,
 											},
 										},
 									},
@@ -424,18 +464,21 @@ type caddyRoute struct {
 
 type caddyMatch struct {
 	Host []string `json:"host,omitempty"`
+	Path []string `json:"path,omitempty"`
 }
 
 type caddyHandler struct {
-	Handler    string          `json:"handler"`
-	Routes     []caddySubroute `json:"routes,omitempty"`
-	Upstreams  []caddyUpstream `json:"upstreams,omitempty"`
-	StatusCode int             `json:"status_code,omitempty"`
-	Body       string          `json:"body,omitempty"`
-	Request    *caddyHeaderOps `json:"request,omitempty"`
+	Handler    string                    `json:"handler"`
+	Routes     []caddySubroute           `json:"routes,omitempty"`
+	Upstreams  []caddyUpstream           `json:"upstreams,omitempty"`
+	StatusCode int                       `json:"status_code,omitempty"`
+	Body       string                    `json:"body,omitempty"`
+	Request    *caddyHeaderOps           `json:"request,omitempty"`
+	Headers    map[string]caddyHeaderOps `json:"headers,omitempty"`
 }
 
 type caddySubroute struct {
+	Match  []caddyMatch   `json:"match,omitempty"`
 	Handle []caddyHandler `json:"handle"`
 }
 
@@ -448,7 +491,12 @@ type caddyHeaderOps struct {
 }
 
 type caddyTLS struct {
-	Automation caddyTLSAutomation `json:"automation"`
+	Certificates *caddyCertificates  `json:"certificates,omitempty"`
+	Automation   caddyTLSAutomation   `json:"automation"`
+}
+
+type caddyCertificates struct {
+	Automate []string `json:"automate,omitempty"`
 }
 
 type caddyTLSAutomation struct {
@@ -475,5 +523,16 @@ type caddyDNSChallenge struct {
 }
 
 type caddyDNSProvider struct {
-	Name string `json:"name"`
+	Name     string `json:"name"`
+	APIToken string `json:"api_token,omitempty"`
+}
+
+func nonEmpty(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

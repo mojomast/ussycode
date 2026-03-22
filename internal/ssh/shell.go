@@ -286,9 +286,9 @@ func (s *Shell) addProxyRoute(ctx context.Context, vmID int64, vmName string) {
 
 	for _, v := range vmRecord {
 		if v.ID == vmID && v.IPAddress.Valid {
-			if err := s.gw.Proxy.AddRoute(ctx, vmName, v.IPAddress.String, 8080); err != nil {
-				s.gw.Proxy.Logger().Warn("failed to add proxy route",
-					"vm", vmName, "error", err)
+			if err := s.gw.Proxy.UpdateRoute(ctx, vmName, v.IPAddress.String, 8080); err != nil {
+				s.gw.Proxy.Logger().Warn("failed to refresh proxy route",
+					"vm", vmName, "ip", v.IPAddress.String, "error", err)
 			}
 			return
 		}

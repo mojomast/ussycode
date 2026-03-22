@@ -90,12 +90,16 @@ func (nm *NetworkManager) SetupBridge() error {
 		return fmt.Errorf("bring up bridge: %w", err)
 	}
 
-	// Expose the metadata service IP on the bridge so VMs can reach it.
-	// Clear any stale loopback assignment first so the bridge owns the address.
-	_ = runCmd("ip", "addr", "del", "169.254.169.254/32", "dev", "lo")
-	if err := runCmd("ip", "addr", "add", "169.254.169.254/32", "dev", nm.bridge); err != nil {
-		nm.logger.Debug("metadata IP may already be assigned", "error", err)
-	}
+	// Do NOT assign 169.254.169.254 to the host bridge.
+	//
+	// On GCP, the host itself uses 169.254.169.254 for metadata-backed DNS
+	// resolution. Claiming that address locally breaks the host's own DNS and in
+	// turn causes outbound ACME lookups/certificate issuance to fail.
+	//
+	// Guests still reach metadata correctly without this address assigned because
+	// they send traffic to their default gateway (the bridge IP), and nftables
+	// redirects guest traffic destined for 169.254.169.254:80 to the local
+	// metadata service on :8083.
 
 	// Enable IP forwarding
 	if err := runCmd("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {

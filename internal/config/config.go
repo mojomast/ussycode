@@ -82,6 +82,9 @@ type Config struct {
 	// DNSAPIToken is the API token for the DNS provider
 	DNSAPIToken string
 
+	// APIDomain is the public hostname for the HTTPS API (e.g. api.example.com)
+	APIDomain string
+
 	// Debug enables debug logging
 	Debug bool
 
@@ -153,6 +156,7 @@ func DefaultConfig() *Config {
 		TLSEmail:            envOrDefault("USSYCODE_TLS_EMAIL", ""),
 		DNSProvider:         envOrDefault("USSYCODE_DNS_PROVIDER", "cloudflare"),
 		DNSAPIToken:         envOrDefault("USSYCODE_DNS_API_TOKEN", ""),
+		APIDomain:           envOrDefault("USSYCODE_API_DOMAIN", ""),
 		Debug:               envOrDefault("USSYCODE_DEBUG", "") != "",
 		FirecrackerBin:      envOrDefault("USSYCODE_FIRECRACKER_BIN", "firecracker"),
 		JailerBin:           envOrDefault("USSYCODE_JAILER_BIN", ""),
@@ -201,6 +205,7 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.TLSEmail, "acme-email", c.TLSEmail, "ACME email for TLS certificates")
 	fs.StringVar(&c.DNSProvider, "dns-provider", c.DNSProvider, "DNS provider for wildcard cert challenges")
 	fs.StringVar(&c.DNSAPIToken, "dns-api-token", c.DNSAPIToken, "DNS provider API token")
+	fs.StringVar(&c.APIDomain, "api-domain", c.APIDomain, "Public hostname for the HTTPS API")
 	fs.BoolVar(&c.Debug, "debug", c.Debug, "Enable debug logging")
 	fs.StringVar(&c.AdminListenAddr, "admin-addr", c.AdminListenAddr, "Admin web panel listen address")
 	fs.StringVar(&c.LLMEncryptSecret, "llm-encrypt-secret", c.LLMEncryptSecret, "Secret for encrypting stored LLM API keys")

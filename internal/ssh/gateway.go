@@ -186,7 +186,15 @@ func (g *Gateway) publicKeyHandler(ctx gssh.Context, key gssh.PublicKey) bool {
 		log.Printf("[auth] REJECTED: fingerprint=%s from IP=%s not authorized by routussy", fingerprint, remoteIP)
 		return false
 	}
-	log.Printf("[auth] routussy authorized fingerprint=%s from IP=%s", fingerprint, remoteIP)
+
+	provisionedUser, err := g.ensureLocalUserForRoutussy(context.Background(), fingerprint, key)
+	if err != nil {
+		log.Printf("[auth] REJECTED: fingerprint=%s authorized by routussy but local provisioning failed: %v", fingerprint, err)
+		return false
+	}
+
+	ctx.SetValue(ctxKeyUser, provisionedUser)
+	log.Printf("[auth] routussy authorized fingerprint=%s from IP=%s -> local user=%s (id=%d)", fingerprint, remoteIP, provisionedUser.Handle, provisionedUser.ID)
 	return true
 }
 
@@ -318,6 +326,113 @@ func (g *Gateway) LookupRoutussyUser(fingerprint string) (*routussyUserResponse,
 	}
 
 	return &user, nil
+}
+
+func (g *Gateway) ensureLocalUserForRoutussy(ctx context.Context, fingerprint string, key gssh.PublicKey) (*db.User, error) {
+	user, err := g.DB.UserByFingerprint(ctx, fingerprint)
+	if err == nil {
+		return user, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("lookup local user by fingerprint: %w", err)
+	}
+
+	rUser, err := g.LookupRoutussyUser(fingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("lookup routussy user: %w", err)
+	}
+
+	handle := sanitizeHandle(rUser.DiscordID)
+	if handle == "" {
+		handle = "user"
+	}
+	handle, err = g.uniqueHandle(ctx, handle)
+	if err != nil {
+		return nil, fmt.Errorf("allocate handle: %w", err)
+	}
+
+	created, err := g.DB.CreateUser(ctx, handle)
+	if err != nil {
+		return nil, fmt.Errorf("create local user: %w", err)
+	}
+
+	pubKeyStr := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(key)))
+	comment := fmt.Sprintf("routussy:%s", rUser.DiscordID)
+	if _, err := g.DB.AddSSHKey(ctx, created.ID, pubKeyStr, fingerprint, comment); err != nil {
+		if existing, lookupErr := g.DB.UserByFingerprint(ctx, fingerprint); lookupErr == nil {
+			return existing, nil
+		}
+		return nil, fmt.Errorf("add local ssh key: %w", err)
+	}
+
+	log.Printf("[auth] provisioned local user from routussy: handle=%s fingerprint=%s discord_id=%s", created.Handle, fingerprint, rUser.DiscordID)
+	return created, nil
+}
+
+func sanitizeHandle(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastHyphen = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastHyphen = false
+		default:
+			if b.Len() > 0 && !lastHyphen {
+				b.WriteByte('-')
+				lastHyphen = true
+			}
+		}
+	}
+
+	handle := strings.Trim(b.String(), "-")
+	if handle == "" {
+		return ""
+	}
+	if handle[0] < 'a' || handle[0] > 'z' {
+		handle = "u-" + handle
+	}
+	if len(handle) > 20 {
+		handle = strings.Trim(handle[:20], "-")
+	}
+	if handle == "" {
+		return "user"
+	}
+	if last := handle[len(handle)-1]; !((last >= 'a' && last <= 'z') || (last >= '0' && last <= '9')) {
+		handle = strings.TrimRight(handle, "-")
+	}
+	if len(handle) < 2 {
+		handle = handle + "1"
+	}
+	return handle
+}
+
+func (g *Gateway) uniqueHandle(ctx context.Context, base string) (string, error) {
+	candidate := base
+	for i := 0; i < 1000; i++ {
+		exists, err := g.DB.HandleExists(ctx, candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+		suffix := fmt.Sprintf("-%d", i+1)
+		trimmed := base
+		if len(trimmed)+len(suffix) > 20 {
+			trimmed = strings.TrimRight(trimmed[:20-len(suffix)], "-")
+		}
+		candidate = trimmed + suffix
+	}
+	return "", fmt.Errorf("could not allocate unique handle for %q", base)
 }
 
 // sessionHandler is the main entry point for each SSH session.

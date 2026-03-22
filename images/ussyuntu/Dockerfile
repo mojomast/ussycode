@@ -105,8 +105,10 @@ RUN systemctl mask \
     networkd-dispatcher.service \
     systemd-udevd.service
 
-# Enable SSH
-RUN systemctl enable ssh.service
+# Enable SSH. Also mask socket activation so sshd runs as a normal service
+# inside the microVM instead of relying on the generator/socket path.
+RUN systemctl enable ssh.service \
+    && systemctl mask ssh.socket
 
 # Custom init script that mounts data disk and sets up networking
 COPY init-ussycode.sh /usr/local/bin/init-ussycode.sh

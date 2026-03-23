@@ -185,6 +185,10 @@ func main() {
 	}
 	apiHandler := api.NewHandler(database, apiExecutor, keyResolver, logger.With("component", "api"), &api.Config{
 		InternalKey: cfg.RoutussyInternalKey,
+		Domain:      cfg.Domain,
+		VM:          vmManager,
+		Metadata:    metaSrv,
+		Proxy:       proxyMgr,
 	})
 
 	// Initialize admin web panel

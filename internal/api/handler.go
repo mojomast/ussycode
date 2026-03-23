@@ -24,7 +24,10 @@ import (
 	"time"
 
 	"github.com/mojomast/ussycode/internal/db"
+	"github.com/mojomast/ussycode/internal/gateway"
+	"github.com/mojomast/ussycode/internal/proxy"
 	"github.com/mojomast/ussycode/internal/telemetry"
+	"github.com/mojomast/ussycode/internal/vm"
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/crypto/ssh"
 )
@@ -58,6 +61,12 @@ type Handler struct {
 	limiter     *RateLimiter
 	logger      *slog.Logger
 	internalKey string
+	domain      string
+
+	// Optional VM control dependencies (nil when VM support is disabled).
+	vm       *vm.Manager
+	metadata *gateway.Server
+	proxy    *proxy.Manager
 }
 
 // Config holds API handler configuration.
@@ -65,6 +74,12 @@ type Config struct {
 	RatePerMinute float64 // requests per minute per fingerprint (default: 60)
 	Burst         int     // max burst (default: 10)
 	InternalKey   string  // shared secret for internal routussy->ussycode API calls
+	Domain        string  // base domain for VM public URLs
+
+	// Optional VM control dependencies.
+	VM       *vm.Manager
+	Metadata *gateway.Server
+	Proxy    *proxy.Manager
 }
 
 // NewHandler creates a new API handler.
@@ -81,6 +96,11 @@ func NewHandler(database *db.DB, executor CommandExecutor, resolver KeyResolver,
 		burst = 10
 	}
 
+	domain := strings.TrimSpace(cfg.Domain)
+	if domain == "" {
+		domain = "ussy.host"
+	}
+
 	return &Handler{
 		db:          database,
 		exec:        executor,
@@ -88,6 +108,10 @@ func NewHandler(database *db.DB, executor CommandExecutor, resolver KeyResolver,
 		limiter:     NewRateLimiter(rate, burst),
 		logger:      logger,
 		internalKey: cfg.InternalKey,
+		domain:      domain,
+		vm:          cfg.VM,
+		metadata:    cfg.Metadata,
+		proxy:       cfg.Proxy,
 	}
 }
 
@@ -99,6 +123,9 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /internal/quota", h.handleInternalQuota)
 	mux.HandleFunc("GET /internal/trust-tiers", h.handleInternalTrustTiers)
 	mux.HandleFunc("POST /internal/trust", h.handleInternalTrust)
+	mux.HandleFunc("GET /internal/vms", h.handleInternalVMs)
+	mux.HandleFunc("POST /internal/vm/start", h.handleInternalVMStart)
+	mux.HandleFunc("POST /internal/vm/stop", h.handleInternalVMStop)
 }
 
 // --- Exec Endpoint ---
@@ -276,6 +303,29 @@ type internalTrustRequest struct {
 	TrustLevel string `json:"trust_level"`
 }
 
+// internalVMNodeInfo describes the node hosting a VM.
+// Today this is always the local control-plane node.
+// When multi-node lands, this will be populated from the nodes table.
+type internalVMNodeInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type internalVMResponse struct {
+	ID        int64               `json:"id"`
+	Name      string              `json:"name"`
+	Status    string              `json:"status"`
+	Image     string              `json:"image"`
+	VCPU      int                 `json:"vcpu"`
+	MemoryMB  int                 `json:"memory_mb"`
+	DiskGB    int                 `json:"disk_gb"`
+	IPAddress *string             `json:"ip_address"`
+	PublicURL string              `json:"public_url"`
+	Node      *internalVMNodeInfo `json:"node,omitempty"`
+	CreatedAt string              `json:"created_at"`
+	UpdatedAt string              `json:"updated_at"`
+}
+
 func (h *Handler) requireInternalAuth(r *http.Request) error {
 	if h.internalKey == "" {
 		return fmt.Errorf("internal API disabled")
@@ -410,6 +460,235 @@ func (h *Handler) handleInternalTrust(w http.ResponseWriter, r *http.Request) {
 		RAMLimitMB:  quotas.RAMLimit,
 		DiskLimitMB: quotas.DiskLimit,
 	})
+}
+
+func (h *Handler) handleInternalVMs(w http.ResponseWriter, r *http.Request) {
+	ctx, span := telemetry.Start(r.Context(), "api.internal_vms")
+	defer span.End()
+
+	if err := h.requireInternalAuth(r); err != nil {
+		h.writeError(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	handle := strings.TrimSpace(r.URL.Query().Get("handle"))
+	if handle == "" {
+		h.writeError(w, "missing handle", http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.db.UserByHandle(ctx, handle)
+	if err != nil {
+		h.logger.Warn("internal VM list unknown user", "handle", handle, "error", err)
+		h.writeError(w, "unknown user", http.StatusNotFound)
+		return
+	}
+
+	vms, err := h.db.VMsByUser(ctx, user.ID)
+	if err != nil {
+		h.logger.Error("failed to load VMs", "handle", handle, "user_id", user.ID, "error", err)
+		h.writeError(w, "failed to load VMs", http.StatusInternalServerError)
+		return
+	}
+
+	resp := make([]internalVMResponse, 0, len(vms))
+	for _, vm := range vms {
+		var ipAddr *string
+		if vm.IPAddress.Valid && strings.TrimSpace(vm.IPAddress.String) != "" {
+			value := vm.IPAddress.String
+			ipAddr = &value
+		}
+
+		entry := internalVMResponse{
+			ID:        vm.ID,
+			Name:      vm.Name,
+			Status:    vm.Status,
+			Image:     vm.Image,
+			VCPU:      vm.VCPU,
+			MemoryMB:  vm.MemoryMB,
+			DiskGB:    vm.DiskGB,
+			IPAddress: ipAddr,
+			PublicURL: fmt.Sprintf("https://%s.%s", vm.Name, h.domain),
+			CreatedAt: vm.CreatedAt.Time.UTC().Format(time.RFC3339),
+			UpdatedAt: vm.UpdatedAt.Time.UTC().Format(time.RFC3339),
+		}
+
+		resp = append(resp, entry)
+	}
+
+	h.logger.Info("listed internal VMs", "handle", handle, "user_id", user.ID, "count", len(resp))
+	h.writeJSON(w, http.StatusOK, map[string]any{"vms": resp})
+}
+
+// internalVMActionRequest is the JSON body for internal VM start/stop.
+type internalVMActionRequest struct {
+	Handle string `json:"handle"`
+	VMName string `json:"vm_name"`
+}
+
+func (h *Handler) handleInternalVMStop(w http.ResponseWriter, r *http.Request) {
+	ctx, span := telemetry.Start(r.Context(), "api.internal_vm_stop")
+	defer span.End()
+
+	if err := h.requireInternalAuth(r); err != nil {
+		h.writeError(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	var req internalVMActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	req.Handle = strings.TrimSpace(req.Handle)
+	req.VMName = strings.TrimSpace(req.VMName)
+	if req.Handle == "" || req.VMName == "" {
+		h.writeError(w, "handle and vm_name are required", http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.db.UserByHandle(ctx, req.Handle)
+	if err != nil {
+		h.logger.Warn("internal VM stop unknown user", "handle", req.Handle, "error", err)
+		h.writeError(w, "unknown user", http.StatusNotFound)
+		return
+	}
+
+	vmRecord, err := h.db.VMByUserAndName(ctx, user.ID, req.VMName)
+	if err != nil {
+		h.logger.Warn("internal VM stop unknown vm", "handle", req.Handle, "vm_name", req.VMName, "error", err)
+		h.writeError(w, "unknown vm", http.StatusNotFound)
+		return
+	}
+
+	if vmRecord.Status != "running" {
+		h.writeError(w, fmt.Sprintf("vm is %s, not running", vmRecord.Status), http.StatusConflict)
+		return
+	}
+
+	// Unregister metadata
+	if h.metadata != nil && vmRecord.IPAddress.Valid {
+		h.metadata.UnregisterVM(vmRecord.IPAddress.String)
+	}
+
+	// Remove proxy route
+	if h.proxy != nil {
+		if err := h.proxy.RemoveRoute(ctx, req.VMName); err != nil {
+			h.logger.Warn("failed to remove proxy route on stop", "vm", req.VMName, "error", err)
+		}
+	}
+
+	// Stop the VM
+	if h.vm != nil {
+		if err := h.vm.Stop(ctx, vmRecord.ID); err != nil {
+			h.logger.Error("internal VM stop failed", "handle", req.Handle, "vm_name", req.VMName, "error", err)
+			h.writeError(w, "failed to stop vm: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		_ = h.db.UpdateVMStatus(ctx, vmRecord.ID, "stopped", nil, nil, nil, nil)
+	}
+
+	h.logger.Info("internal VM stopped", "handle", req.Handle, "vm_name", req.VMName, "vm_id", vmRecord.ID)
+	h.writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "vm_name": req.VMName})
+}
+
+func (h *Handler) handleInternalVMStart(w http.ResponseWriter, r *http.Request) {
+	ctx, span := telemetry.Start(r.Context(), "api.internal_vm_start")
+	defer span.End()
+
+	if err := h.requireInternalAuth(r); err != nil {
+		h.writeError(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	var req internalVMActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	req.Handle = strings.TrimSpace(req.Handle)
+	req.VMName = strings.TrimSpace(req.VMName)
+	if req.Handle == "" || req.VMName == "" {
+		h.writeError(w, "handle and vm_name are required", http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.db.UserByHandle(ctx, req.Handle)
+	if err != nil {
+		h.logger.Warn("internal VM start unknown user", "handle", req.Handle, "error", err)
+		h.writeError(w, "unknown user", http.StatusNotFound)
+		return
+	}
+
+	vmRecord, err := h.db.VMByUserAndName(ctx, user.ID, req.VMName)
+	if err != nil {
+		h.logger.Warn("internal VM start unknown vm", "handle", req.Handle, "vm_name", req.VMName, "error", err)
+		h.writeError(w, "unknown vm", http.StatusNotFound)
+		return
+	}
+
+	if vmRecord.Status == "running" {
+		h.writeError(w, "vm is already running", http.StatusConflict)
+		return
+	}
+
+	// Collect SSH keys for the user
+	var sshKeys []string
+	keys, err := h.db.SSHKeysByUser(ctx, user.ID)
+	if err == nil {
+		for _, k := range keys {
+			sshKeys = append(sshKeys, k.PublicKey)
+		}
+	}
+	// Include per-user gateway key if VM manager is available
+	if h.vm != nil {
+		if pubKey, err := h.vm.UserPublicKey(user.ID); err == nil && pubKey != "" {
+			sshKeys = append(sshKeys, pubKey)
+		}
+	}
+
+	// Start the VM
+	if h.vm != nil {
+		if err := h.vm.Start(ctx, vmRecord.ID, vmRecord.Name, vmRecord.Image, vmRecord.VCPU, vmRecord.MemoryMB, sshKeys); err != nil {
+			h.logger.Error("internal VM start failed", "handle", req.Handle, "vm_name", req.VMName, "error", err)
+			h.writeError(w, "failed to start vm: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Re-read VM to get the assigned IP for metadata/proxy registration
+		updatedVM, err := h.db.VMByUserAndName(ctx, user.ID, req.VMName)
+		if err == nil && updatedVM.IPAddress.Valid {
+			ip := updatedVM.IPAddress.String
+
+			// Register metadata (without routussy env vars — those require SSH session context)
+			if h.metadata != nil {
+				h.metadata.RegisterVM(ip, &gateway.VMMetadata{
+					InstanceID: fmt.Sprintf("vm-%d", vmRecord.ID),
+					LocalIPv4:  ip,
+					Hostname:   req.VMName,
+					UserID:     user.ID,
+					UserHandle: user.Handle,
+					VMName:     req.VMName,
+					Image:      vmRecord.Image,
+					SSHKeys:    sshKeys,
+					Gateway:    "10.0.0.1",
+				})
+			}
+
+			// Register proxy route
+			if h.proxy != nil {
+				if err := h.proxy.UpdateRoute(ctx, req.VMName, ip, 8080); err != nil {
+					h.logger.Warn("failed to add proxy route on start", "vm", req.VMName, "ip", ip, "error", err)
+				}
+			}
+		}
+	} else {
+		_ = h.db.UpdateVMStatus(ctx, vmRecord.ID, "running", nil, nil, nil, nil)
+	}
+
+	h.logger.Info("internal VM started", "handle", req.Handle, "vm_name", req.VMName, "vm_id", vmRecord.ID)
+	h.writeJSON(w, http.StatusOK, map[string]any{"status": "running", "vm_name": req.VMName})
 }
 
 // --- Authentication ---

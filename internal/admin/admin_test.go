@@ -435,22 +435,22 @@ func TestLoginCallback_OperatorSuccess(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	// Upgrade to operator
+	// Upgrade to admin (admin-access tier)
 	err = database.WriteTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
-			`UPDATE users SET trust_level = 'operator' WHERE id = ?`, user.ID)
+			`UPDATE users SET trust_level = 'admin' WHERE id = ?`, user.ID)
 		return err
 	})
 	if err != nil {
-		t.Fatalf("upgrade to operator: %v", err)
+		t.Fatalf("upgrade to admin: %v", err)
 	}
 
-	createMagicToken(t, database, user.ID, "operator-token-xyz")
+	createMagicToken(t, database, user.ID, "admin-token-xyz")
 
 	mux := http.NewServeMux()
 	handler.Routes(mux)
 
-	req := httptest.NewRequest("GET", "/admin/login/callback?token=operator-token-xyz", nil)
+	req := httptest.NewRequest("GET", "/admin/login/callback?token=admin-token-xyz", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -874,7 +874,6 @@ func TestTrustBadge(t *testing.T) {
 		expected string
 	}{
 		{"admin", "badge-admin"},
-		{"operator", "badge-operator"},
 		{"citizen", "badge-citizen"},
 		{"newbie", "badge-newbie"},
 		{"unknown", "badge-newbie"},

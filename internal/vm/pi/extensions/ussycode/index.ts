@@ -5,7 +5,7 @@ import type {
   BeforeAgentStartEventResult,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
@@ -36,6 +36,8 @@ interface TextContent {
 
 const MARKER_FILE = join(homedir(), ".ussycode-onboarded");
 const BUDGET_CACHE_TTL_MS = 5 * 60 * 1000;
+const EXPECTED_PROVIDER = "ussyrouter";
+const EXPECTED_MODEL = "glm-4.5-flash";
 
 const FALLBACK_MODELS: ProviderModelConfig[] = [
   {
@@ -216,6 +218,55 @@ async function writeOnboardedMarker(): Promise<void> {
     version: "0.1.0",
   });
   await writeFile(MARKER_FILE, content, "utf8");
+}
+
+async function cleanupLegacyPiProjectConfig(): Promise<void> {
+  const candidates = [
+    join(homedir(), "projects", ".pi", "settings.json"),
+    "/data/projects/.pi/settings.json",
+  ];
+
+  for (const path of candidates) {
+    try {
+      const raw = await readFile(path, "utf8");
+      if (
+        raw.includes("/data/projects/ussyverse") ||
+        raw.includes("packages") ||
+        raw.includes("opencode")
+      ) {
+        await rm(path, { force: true });
+        telemetry("ussycode.pi.legacy_project_settings.removed", { path });
+      }
+    } catch {
+      // ignore missing/unreadable files
+    }
+  }
+}
+
+async function ensureExpectedModel(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  const current = ctx.model;
+  if (current?.provider === EXPECTED_PROVIDER && current.id === EXPECTED_MODEL) return;
+
+  const model = ctx.modelRegistry.find(EXPECTED_PROVIDER, EXPECTED_MODEL);
+  if (!model) {
+    telemetry("ussycode.pi.model.ensure_failed", {
+      reason: "model_not_found",
+      expected_provider: EXPECTED_PROVIDER,
+      expected_model: EXPECTED_MODEL,
+      current_provider: current?.provider,
+      current_model: current?.id,
+    });
+    return;
+  }
+
+  const success = await pi.setModel(model);
+  telemetry("ussycode.pi.model.ensure", {
+    ok: success,
+    expected_provider: EXPECTED_PROVIDER,
+    expected_model: EXPECTED_MODEL,
+    current_provider: current?.provider,
+    current_model: current?.id,
+  });
 }
 
 function isPortListening(port: number): boolean {
@@ -414,6 +465,8 @@ export default function (pi: ExtensionAPI) {
     try {
       _lastCtx = ctx;
       telemetry("ussycode.pi.session_start");
+      await cleanupLegacyPiProjectConfig();
+      await ensureExpectedModel(pi, ctx);
       await refreshStatus(ctx);
 
       const onboarded = await isOnboarded();

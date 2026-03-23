@@ -57,12 +57,14 @@ type Handler struct {
 	keyResolver KeyResolver
 	limiter     *RateLimiter
 	logger      *slog.Logger
+	internalKey string
 }
 
 // Config holds API handler configuration.
 type Config struct {
 	RatePerMinute float64 // requests per minute per fingerprint (default: 60)
 	Burst         int     // max burst (default: 10)
+	InternalKey   string  // shared secret for internal routussy->ussycode API calls
 }
 
 // NewHandler creates a new API handler.
@@ -85,6 +87,7 @@ func NewHandler(database *db.DB, executor CommandExecutor, resolver KeyResolver,
 		keyResolver: resolver,
 		limiter:     NewRateLimiter(rate, burst),
 		logger:      logger,
+		internalKey: cfg.InternalKey,
 	}
 }
 
@@ -93,6 +96,9 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /exec", h.handleExec)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /version", h.handleVersion)
+	mux.HandleFunc("GET /internal/quota", h.handleInternalQuota)
+	mux.HandleFunc("GET /internal/trust-tiers", h.handleInternalTrustTiers)
+	mux.HandleFunc("POST /internal/trust", h.handleInternalTrust)
 }
 
 // --- Exec Endpoint ---
@@ -240,6 +246,170 @@ func (h *Handler) handleVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusOK, info)
+}
+
+type internalQuotaResponse struct {
+	Handle       string `json:"handle"`
+	TrustLevel   string `json:"trust_level"`
+	VMCount      int    `json:"vm_count"`
+	TotalDiskGB  int    `json:"total_disk_gb"`
+	VMLimit      int    `json:"vm_limit"`
+	CPULimit     int    `json:"cpu_limit"`
+	RAMLimitMB   int    `json:"ram_limit_mb"`
+	DiskLimitMB  int    `json:"disk_limit_mb"`
+}
+
+type internalTrustTierResponse struct {
+	Key            string `json:"key"`
+	DisplayName    string `json:"display_name"`
+	Description    string `json:"description"`
+	VMLimit        int    `json:"vm_limit"`
+	CPULimit       int    `json:"cpu_limit"`
+	RAMLimitMB     int    `json:"ram_limit_mb"`
+	DiskLimitMB    int    `json:"disk_limit_mb"`
+	CanAccessAdmin bool   `json:"can_access_admin"`
+	Requestable    bool   `json:"requestable"`
+}
+
+type internalTrustRequest struct {
+	Handle     string `json:"handle"`
+	TrustLevel string `json:"trust_level"`
+}
+
+func (h *Handler) requireInternalAuth(r *http.Request) error {
+	if h.internalKey == "" {
+		return fmt.Errorf("internal API disabled")
+	}
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		return fmt.Errorf("missing Authorization header")
+	}
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return fmt.Errorf("invalid authorization scheme")
+	}
+	if strings.TrimPrefix(authHeader, "Bearer ") != h.internalKey {
+		return fmt.Errorf("invalid internal API key")
+	}
+	return nil
+}
+
+func (h *Handler) handleInternalQuota(w http.ResponseWriter, r *http.Request) {
+	if err := h.requireInternalAuth(r); err != nil {
+		h.writeError(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	handle := strings.TrimSpace(r.URL.Query().Get("handle"))
+	if handle == "" {
+		h.writeError(w, "missing handle", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	user, err := h.db.UserByHandle(ctx, handle)
+	if err != nil {
+		h.writeError(w, "unknown user", http.StatusNotFound)
+		return
+	}
+	quotas, err := h.db.GetUserQuotas(ctx, user.ID)
+	if err != nil {
+		h.writeError(w, "failed to load quotas", http.StatusInternalServerError)
+		return
+	}
+	vmCount, err := h.db.GetUserVMCount(ctx, user.ID)
+	if err != nil {
+		h.writeError(w, "failed to load vm count", http.StatusInternalServerError)
+		return
+	}
+	totalDiskGB, err := h.db.GetUserTotalDiskGB(ctx, user.ID)
+	if err != nil {
+		h.writeError(w, "failed to load disk usage", http.StatusInternalServerError)
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, internalQuotaResponse{
+		Handle:      user.Handle,
+		TrustLevel:  quotas.Level,
+		VMCount:     vmCount,
+		TotalDiskGB: totalDiskGB,
+		VMLimit:     quotas.VMLimit,
+		CPULimit:    quotas.CPULimit,
+		RAMLimitMB:  quotas.RAMLimit,
+		DiskLimitMB: quotas.DiskLimit,
+	})
+}
+
+func (h *Handler) handleInternalTrustTiers(w http.ResponseWriter, r *http.Request) {
+	if err := h.requireInternalAuth(r); err != nil {
+		h.writeError(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	tiers := db.ListTrustTiers()
+	resp := make([]internalTrustTierResponse, 0, len(tiers))
+	for _, tier := range tiers {
+		resp = append(resp, internalTrustTierResponse{
+			Key:            tier.Key,
+			DisplayName:    tier.DisplayName,
+			Description:    tier.Description,
+			VMLimit:        tier.VMLimit,
+			CPULimit:       tier.CPULimit,
+			RAMLimitMB:     tier.RAMLimitMB,
+			DiskLimitMB:    tier.DiskLimitMB,
+			CanAccessAdmin: tier.CanAccessAdmin,
+			Requestable:    tier.Requestable,
+		})
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]any{"tiers": resp})
+}
+
+func (h *Handler) handleInternalTrust(w http.ResponseWriter, r *http.Request) {
+	if err := h.requireInternalAuth(r); err != nil {
+		h.writeError(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		h.writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req internalTrustRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		h.writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Handle) == "" || strings.TrimSpace(req.TrustLevel) == "" {
+		h.writeError(w, "missing handle or trust_level", http.StatusBadRequest)
+		return
+	}
+	if !db.IsValidTrustLevel(req.TrustLevel) {
+		h.writeError(w, "invalid trust level", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	user, err := h.db.UserByHandle(ctx, req.Handle)
+	if err != nil {
+		h.writeError(w, "unknown user", http.StatusNotFound)
+		return
+	}
+	if err := h.db.SetUserTrustLevel(ctx, user.ID, req.TrustLevel); err != nil {
+		h.writeError(w, "failed to update trust level", http.StatusInternalServerError)
+		return
+	}
+
+	quotas := db.GetTrustLimits(req.TrustLevel)
+	h.writeJSON(w, http.StatusOK, internalQuotaResponse{
+		Handle:      user.Handle,
+		TrustLevel:  quotas.Level,
+		VMCount:     0,
+		TotalDiskGB: 0,
+		VMLimit:     quotas.VMLimit,
+		CPULimit:    quotas.CPULimit,
+		RAMLimitMB:  quotas.RAMLimit,
+		DiskLimitMB: quotas.DiskLimit,
+	})
 }
 
 // --- Authentication ---

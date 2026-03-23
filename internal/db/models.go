@@ -219,57 +219,32 @@ type TrustLimits struct {
 }
 
 // ValidTrustLevels lists all valid trust level strings.
-var ValidTrustLevels = []string{"newbie", "citizen", "operator", "admin"}
+var ValidTrustLevels = func() []string {
+	tiers := ListTrustTiers()
+	out := make([]string, 0, len(tiers))
+	for _, tier := range tiers {
+		out = append(out, tier.Key)
+	}
+	return out
+}()
 
 // IsValidTrustLevel returns true if level is a recognized trust level.
 func IsValidTrustLevel(level string) bool {
-	for _, l := range ValidTrustLevels {
-		if l == level {
-			return true
-		}
-	}
-	return false
-}
-
-// trustLimitsMap maps trust levels to their resource quotas.
-var trustLimitsMap = map[string]TrustLimits{
-	"newbie": {
-		Level:     "newbie",
-		VMLimit:   3,
-		CPULimit:  1,
-		RAMLimit:  2048,
-		DiskLimit: 5120,
-	},
-	"citizen": {
-		Level:     "citizen",
-		VMLimit:   10,
-		CPULimit:  4,
-		RAMLimit:  8192,
-		DiskLimit: 25600,
-	},
-	"operator": {
-		Level:     "operator",
-		VMLimit:   25,
-		CPULimit:  8,
-		RAMLimit:  16384,
-		DiskLimit: 102400,
-	},
-	"admin": {
-		Level:     "admin",
-		VMLimit:   -1,
-		CPULimit:  -1,
-		RAMLimit:  -1,
-		DiskLimit: -1,
-	},
+	_, ok := trustTierByKey[level]
+	return ok
 }
 
 // GetTrustLimits returns the resource quotas for a given trust level.
 // Returns newbie limits if the level is unrecognized.
 func GetTrustLimits(level string) TrustLimits {
-	if limits, ok := trustLimitsMap[level]; ok {
-		return limits
+	tier := GetTrustTier(level)
+	return TrustLimits{
+		Level:     tier.Key,
+		VMLimit:   tier.VMLimit,
+		CPULimit:  tier.CPULimit,
+		RAMLimit:  tier.RAMLimitMB,
+		DiskLimit: tier.DiskLimitMB,
 	}
-	return trustLimitsMap["newbie"]
 }
 
 // CustomDomain represents a custom domain mapped to a VM.

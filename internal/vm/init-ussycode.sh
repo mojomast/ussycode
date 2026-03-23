@@ -199,12 +199,39 @@ mount_data_disk() {
 mount_data_disk || log "WARNING: data disk setup failed, continuing without it"
 
 # ── Pi coding agent configuration ───────────────────────────────────
-# The ussycode-specific pi extension/theme/skills are now injected directly
-# into ~/.pi/agent by the host before boot so we do not depend on npm package
-# installs inside the guest. Only ensure the directory exists here.
+# The ussycode-specific pi extension/theme/skills are injected directly into
+# ~/.pi/agent by the host before boot. Here we finish runtime configuration by
+# writing a concrete models.json that points Pi at the routed ussyrouter env.
 
 PI_CONFIG_DIR="/home/ussycode/.pi/agent"
 mkdir -p "$PI_CONFIG_DIR"
+
+if [ -n "${OPENCODE_BASE_URL:-}" ] && [ -n "${OPENCODE_API_KEY:-}" ]; then
+    cat > "$PI_CONFIG_DIR/models.json" <<PIEOF
+{
+  "providers": {
+    "ussyrouter": {
+      "baseUrl": "${OPENCODE_BASE_URL}",
+      "apiKey": "OPENCODE_API_KEY",
+      "api": "openai-completions",
+      "models": [
+        { "id": "glm-5", "name": "GLM-5", "reasoning": true, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+        { "id": "glm-5-turbo", "name": "GLM-5 Turbo", "reasoning": true, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+        { "id": "glm-4.7", "name": "GLM-4.7", "reasoning": true, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+        { "id": "glm-4.7-flash", "name": "GLM-4.7 Flash", "reasoning": false, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+        { "id": "glm-4.6", "name": "GLM-4.6", "reasoning": true, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+        { "id": "glm-4.6v", "name": "GLM-4.6V", "reasoning": true, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+        { "id": "glm-4.5", "name": "GLM-4.5", "reasoning": true, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+        { "id": "glm-4.5-air", "name": "GLM-4.5 Air", "reasoning": false, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+        { "id": "glm-4.5-flash", "name": "GLM-4.5 Flash", "reasoning": false, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } },
+        { "id": "glm-4.5v", "name": "GLM-4.5V", "reasoning": true, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } }
+      ]
+    }
+  }
+}
+PIEOF
+fi
+
 chown -R ussycode:ussycode "/home/ussycode/.pi"
 
 log "Init complete"

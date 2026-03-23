@@ -346,14 +346,20 @@ func (g *Gateway) ensureLocalUserForRoutussy(ctx context.Context, fingerprint st
 	if handle == "" {
 		handle = "user"
 	}
-	handle, err = g.uniqueHandle(ctx, handle)
-	if err != nil {
-		return nil, fmt.Errorf("allocate handle: %w", err)
-	}
 
-	created, err := g.DB.CreateUser(ctx, handle)
+	created, err := g.DB.UserByHandle(ctx, handle)
 	if err != nil {
-		return nil, fmt.Errorf("create local user: %w", err)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("lookup local user by handle: %w", err)
+		}
+		handle, err = g.uniqueHandle(ctx, handle)
+		if err != nil {
+			return nil, fmt.Errorf("allocate handle: %w", err)
+		}
+		created, err = g.DB.CreateUser(ctx, handle)
+		if err != nil {
+			return nil, fmt.Errorf("create local user: %w", err)
+		}
 	}
 
 	pubKeyStr := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(key)))

@@ -41,9 +41,8 @@ func TestGetTrustLimits(t *testing.T) {
 		ramLimit  int
 		diskLimit int
 	}{
-		{"newbie", 3, 1, 2048, 5120},
-		{"citizen", 10, 4, 8192, 25600},
-		{"operator", 25, 8, 16384, 102400},
+		{"newbie", 1, 1, 2048, 5120},
+		{"citizen", 2, 2, 4096, 25600},
 		{"admin", -1, -1, -1, -1},
 	}
 
@@ -68,14 +67,14 @@ func TestGetTrustLimits(t *testing.T) {
 	// Unknown level should return newbie defaults
 	t.Run("unknown", func(t *testing.T) {
 		limits := GetTrustLimits("unknown")
-		if limits.VMLimit != 3 {
-			t.Errorf("unknown level VMLimit: got %d, want 3", limits.VMLimit)
+		if limits.VMLimit != 1 {
+			t.Errorf("unknown level VMLimit: got %d, want 1", limits.VMLimit)
 		}
 	})
 }
 
 func TestIsValidTrustLevel(t *testing.T) {
-	valid := []string{"newbie", "citizen", "operator", "admin"}
+	valid := []string{"newbie", "citizen", "admin"}
 	for _, level := range valid {
 		if !IsValidTrustLevel(level) {
 			t.Errorf("expected %q to be valid", level)
@@ -207,10 +206,10 @@ func TestQuotaEnforcement(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	// Default is newbie with VM limit of 3
+	// Default is newbie with VM limit of 1
 	limits := GetTrustLimits(user.TrustLevel)
-	if limits.VMLimit != 3 {
-		t.Fatalf("expected newbie VM limit 3, got %d", limits.VMLimit)
+	if limits.VMLimit != 1 {
+		t.Fatalf("expected newbie VM limit 1, got %d", limits.VMLimit)
 	}
 
 	// Create VMs up to the limit
@@ -272,8 +271,8 @@ func TestQuotaEnforcement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUserVMCount after delete: %v", err)
 	}
-	if count != 2 {
-		t.Errorf("expected 2 after delete, got %d", count)
+	if count != 0 {
+		t.Errorf("expected 0 after delete, got %d", count)
 	}
 }
 
@@ -295,8 +294,8 @@ func TestGetUserQuotas(t *testing.T) {
 	if quotas.Level != "newbie" {
 		t.Errorf("Level: got %q, want 'newbie'", quotas.Level)
 	}
-	if quotas.VMLimit != 3 {
-		t.Errorf("VMLimit: got %d, want 3", quotas.VMLimit)
+	if quotas.VMLimit != 1 {
+		t.Errorf("VMLimit: got %d, want 1", quotas.VMLimit)
 	}
 	if quotas.CPULimit != 1 {
 		t.Errorf("CPULimit: got %d, want 1", quotas.CPULimit)

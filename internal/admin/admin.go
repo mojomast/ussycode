@@ -1,9 +1,8 @@
 // Package admin implements the ussycode admin web panel.
 //
-// The panel provides a dashboard for operators and admins to manage
-// users, VMs, and system nodes. Authentication is via magic link tokens
-// or session cookies — only users with trust_level 'operator' or 'admin'
-// can access the panel.
+// The panel provides a dashboard for admins to manage users, VMs, and system nodes.
+// Authentication is via magic link tokens or session cookies — only users whose
+// trust tier grants admin-panel access may log in.
 //
 // Templates and static assets are embedded via //go:embed directives.
 package admin
@@ -285,8 +284,8 @@ func (h *Handler) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	telemetry.RecordBrowserToken(ctx, "redeemed")
 
-	// Check trust level — must be operator or admin
-	if user.TrustLevel != "operator" && user.TrustLevel != "admin" {
+	// Check trust level — must have admin-panel access.
+	if !db.CanAccessAdmin(user.TrustLevel) {
 		h.logger.Warn("non-admin user attempted admin login",
 			"handle", user.Handle, "trust_level", user.TrustLevel)
 		http.Redirect(w, r, "/admin/login?error=insufficient+permissions", http.StatusSeeOther)
@@ -405,12 +404,18 @@ func (h *Handler) handleUserDetail(w http.ResponseWriter, r *http.Request) {
 		keys = nil
 	}
 
+	levels := db.ListTrustTiers()
+	trustLevels := make([]string, 0, len(levels))
+	for _, level := range levels {
+		trustLevels = append(trustLevels, level.Key)
+	}
+
 	h.render(w, "user_detail.html", map[string]interface{}{
 		"Session":     sess,
 		"User":        user,
 		"VMs":         vms,
 		"Keys":        keys,
-		"TrustLevels": []string{"newbie", "citizen", "operator", "admin"},
+		"TrustLevels": trustLevels,
 		"Domain":      h.domain,
 		"Success":     r.URL.Query().Get("success"),
 		"Error":       r.URL.Query().Get("error"),
@@ -436,8 +441,7 @@ func (h *Handler) handleSetTrustLevel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newLevel := r.FormValue("trust_level")
-	validLevels := map[string]bool{"newbie": true, "citizen": true, "operator": true, "admin": true}
-	if !validLevels[newLevel] {
+	if !db.IsValidTrustLevel(newLevel) {
 		http.Redirect(w, r, fmt.Sprintf("/admin/users/%d?error=invalid+trust+level", id), http.StatusSeeOther)
 		return
 	}
@@ -736,8 +740,6 @@ func trustBadge(level string) string {
 	switch level {
 	case "admin":
 		return "badge-admin"
-	case "operator":
-		return "badge-operator"
 	case "citizen":
 		return "badge-citizen"
 	default:

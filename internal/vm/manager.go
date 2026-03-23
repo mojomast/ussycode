@@ -43,7 +43,7 @@ const ussycodeOpencodeConfig = `{
       }
     }
   },
-  "model": "zai/glm-5"
+  "model": "zai/glm-4.5-flash"
 }
 `
 
@@ -363,14 +363,18 @@ func (m *Manager) installPiRuntimeFiles(ctx context.Context, rootfs string) erro
 
 func defaultPiSettings() string {
 	settings := map[string]any{
-		"defaultProvider":     "ussyrouter",
-		"defaultModel":        "ussyrouter/glm-4.5-flash",
-		"theme":               "ussyverse",
-		"enableSkillCommands": true,
+		"defaultProvider":      "ussyrouter",
+		"defaultModel":         "glm-4.5-flash",
+		"defaultThinkingLevel": "medium",
+		"theme":                "ussyverse",
+		"enableSkillCommands":  true,
+		"quietStartup":         true,
+		"collapseChangelog":    true,
+		"enabledModels":        []string{"ussyrouter/*"},
 	}
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		return "{\n  \"defaultProvider\": \"ussyrouter\",\n  \"defaultModel\": \"ussyrouter/glm-4.5-flash\",\n  \"theme\": \"ussyverse\",\n  \"enableSkillCommands\": true\n}\n"
+		return "{\n  \"defaultProvider\": \"ussyrouter\",\n  \"defaultModel\": \"glm-4.5-flash\",\n  \"defaultThinkingLevel\": \"medium\",\n  \"theme\": \"ussyverse\",\n  \"enableSkillCommands\": true,\n  \"quietStartup\": true,\n  \"collapseChangelog\": true,\n  \"enabledModels\": [\"ussyrouter/*\"]\n}\n"
 	}
 	return string(data) + "\n"
 }
@@ -386,14 +390,20 @@ func migratePiSettings(raw string) string {
 	}
 
 	delete(settings, "packages")
-	if _, ok := settings["defaultProvider"]; !ok {
-		settings["defaultProvider"] = "ussyrouter"
-	}
-	if _, ok := settings["defaultModel"]; !ok {
-		settings["defaultModel"] = "ussyrouter/glm-4.5-flash"
+	delete(settings, "extensions")
+	delete(settings, "skills")
+	delete(settings, "prompts")
+	delete(settings, "themes")
+	settings["defaultProvider"] = "ussyrouter"
+	settings["defaultModel"] = "glm-4.5-flash"
+	if _, ok := settings["defaultThinkingLevel"]; !ok {
+		settings["defaultThinkingLevel"] = "medium"
 	}
 	settings["theme"] = "ussyverse"
 	settings["enableSkillCommands"] = true
+	settings["quietStartup"] = true
+	settings["collapseChangelog"] = true
+	settings["enabledModels"] = []string{"ussyrouter/*"}
 
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {

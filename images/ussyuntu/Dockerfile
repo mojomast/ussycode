@@ -44,7 +44,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN npm install -g opencode-ai
 
 # Install pi coding agent
-RUN npm install -g @mariozechner/pi-coding-agent
+RUN npm install -g @mariozechner/pi-coding-agent@0.62.0
 
 # Install Go (latest stable)
 ARG GO_VERSION=1.24.4

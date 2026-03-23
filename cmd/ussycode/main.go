@@ -183,7 +183,9 @@ func main() {
 		}
 		return resolved, nil
 	}
-	apiHandler := api.NewHandler(database, apiExecutor, keyResolver, logger.With("component", "api"), &api.Config{})
+	apiHandler := api.NewHandler(database, apiExecutor, keyResolver, logger.With("component", "api"), &api.Config{
+		InternalKey: cfg.RoutussyInternalKey,
+	})
 
 	// Initialize admin web panel
 	webFS, err := fs.Sub(admin.WebFS, "web")

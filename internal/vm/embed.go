@@ -12,3 +12,15 @@ import _ "embed"
 //
 //go:embed init-ussycode.sh
 var ussycodeInitScript string
+
+//go:embed pi/extensions/ussycode/index.ts
+var ussycodePiExtension string
+
+//go:embed pi/themes/ussyverse.json
+var ussycodePiTheme string
+
+//go:embed pi/skills/ussycode-web/SKILL.md
+var ussycodePiSkillWeb string
+
+//go:embed pi/skills/ussycode-publish/SKILL.md
+var ussycodePiSkillPublish string

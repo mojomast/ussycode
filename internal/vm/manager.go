@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log/slog"
@@ -259,6 +260,9 @@ func (m *Manager) configureGuestSSH(ctx context.Context, rootfs string) error {
 	if err := m.installOpencodeRuntimeFiles(ctx, rootfs); err != nil {
 		return fmt.Errorf("install opencode runtime files: %w", err)
 	}
+	if err := m.installPiRuntimeFiles(ctx, rootfs); err != nil {
+		return fmt.Errorf("install pi runtime files: %w", err)
+	}
 
 	// Patch the init script so existing VMs pick up fixes without a
 	// full image rebuild. The embedded content stays in sync with
@@ -302,6 +306,96 @@ func (m *Manager) installOpencodeRuntimeFiles(ctx context.Context, rootfs string
 	return nil
 }
 
+func (m *Manager) installPiRuntimeFiles(ctx context.Context, rootfs string) error {
+	base := filepath.Join("home", "ussycode", ".pi", "agent")
+	if err := mkdirExt4(ctx, rootfs, "/home/ussycode/.pi"); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/"+base); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/"+filepath.Join(base, "extensions")); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/"+filepath.Join(base, "extensions", "ussycode")); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/"+filepath.Join(base, "themes")); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/"+filepath.Join(base, "skills")); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/"+filepath.Join(base, "skills", "ussycode-web")); err != nil {
+		return err
+	}
+	if err := mkdirExt4(ctx, rootfs, "/"+filepath.Join(base, "skills", "ussycode-publish")); err != nil {
+		return err
+	}
+
+	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "extensions", "ussycode", "index.ts"), ussycodePiExtension, 1001, 1001, "0100644"); err != nil {
+		return err
+	}
+	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "themes", "ussyverse.json"), ussycodePiTheme, 1001, 1001, "0100644"); err != nil {
+		return err
+	}
+	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "skills", "ussycode-web", "SKILL.md"), ussycodePiSkillWeb, 1001, 1001, "0100644"); err != nil {
+		return err
+	}
+	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "skills", "ussycode-publish", "SKILL.md"), ussycodePiSkillPublish, 1001, 1001, "0100644"); err != nil {
+		return err
+	}
+	if err := rewriteExt4File(ctx, rootfs, "/"+filepath.Join(base, "settings.json"), 1001, 1001, "0100644", func(s string) string {
+		return migratePiSettings(s)
+	}); err != nil {
+		if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "settings.json"), defaultPiSettings(), 1001, 1001, "0100644"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func defaultPiSettings() string {
+	settings := map[string]any{
+		"defaultProvider":     "ussyrouter",
+		"defaultModel":        "ussyrouter/glm-4.5-flash",
+		"theme":               "ussyverse",
+		"enableSkillCommands": true,
+	}
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return "{\n  \"defaultProvider\": \"ussyrouter\",\n  \"defaultModel\": \"ussyrouter/glm-4.5-flash\",\n  \"theme\": \"ussyverse\",\n  \"enableSkillCommands\": true\n}\n"
+	}
+	return string(data) + "\n"
+}
+
+func migratePiSettings(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return defaultPiSettings()
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return defaultPiSettings()
+	}
+
+	delete(settings, "packages")
+	if _, ok := settings["defaultProvider"]; !ok {
+		settings["defaultProvider"] = "ussyrouter"
+	}
+	if _, ok := settings["defaultModel"]; !ok {
+		settings["defaultModel"] = "ussyrouter/glm-4.5-flash"
+	}
+	settings["theme"] = "ussyverse"
+	settings["enableSkillCommands"] = true
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return defaultPiSettings()
+	}
+	return string(data) + "\n"
+}
+
 func mkdirExt4(ctx context.Context, rootfs, dir string) error {
 	cmd := exec.CommandContext(ctx, "debugfs", "-w", "-R", fmt.Sprintf("mkdir %s", dir), rootfs)
 	out, err := cmd.CombinedOutput()
@@ -331,6 +425,7 @@ func writeExt4File(ctx context.Context, rootfs, guestPath, content string, uid, 
 		fmt.Sprintf("set_inode_field %s uid %d", guestPath, uid),
 		fmt.Sprintf("set_inode_field %s gid %d", guestPath, gid),
 		fmt.Sprintf("set_inode_field %s mode %s", guestPath, mode),
+		fmt.Sprintf("set_inode_field %s size %d", guestPath, len(content)),
 	}
 	for _, cmdText := range commands {
 		cmd := exec.CommandContext(ctx, "debugfs", "-w", "-R", cmdText, rootfs)
@@ -360,7 +455,8 @@ func rewriteExt4File(ctx context.Context, rootfs, guestPath string, uid, gid int
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmpPath, []byte(mutate(string(data))), 0600); err != nil {
+	mutated := mutate(string(data))
+	if err := os.WriteFile(tmpPath, []byte(mutated), 0600); err != nil {
 		return err
 	}
 
@@ -370,6 +466,7 @@ func rewriteExt4File(ctx context.Context, rootfs, guestPath string, uid, gid int
 		fmt.Sprintf("set_inode_field %s uid %d", guestPath, uid),
 		fmt.Sprintf("set_inode_field %s gid %d", guestPath, gid),
 		fmt.Sprintf("set_inode_field %s mode %s", guestPath, mode),
+		fmt.Sprintf("set_inode_field %s size %d", guestPath, len(mutated)),
 	}
 	for _, cmdText := range commands {
 		cmd := exec.CommandContext(ctx, "debugfs", "-w", "-R", cmdText, rootfs)

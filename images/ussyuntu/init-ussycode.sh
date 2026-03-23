@@ -199,28 +199,12 @@ mount_data_disk() {
 mount_data_disk || log "WARNING: data disk setup failed, continuing without it"
 
 # ── Pi coding agent configuration ───────────────────────────────────
-# Ensure pi's config directory exists and has the ussycode package configured.
-# This runs as root during boot, so we set ownership at the end.
+# The ussycode-specific pi extension/theme/skills are now injected directly
+# into ~/.pi/agent by the host before boot so we do not depend on npm package
+# installs inside the guest. Only ensure the directory exists here.
 
 PI_CONFIG_DIR="/home/ussycode/.pi/agent"
 mkdir -p "$PI_CONFIG_DIR"
-
-# Write pi settings if not already present (don't overwrite user customizations)
-if [ ! -f "$PI_CONFIG_DIR/settings.json" ]; then
-    cat > "$PI_CONFIG_DIR/settings.json" << 'PIEOF'
-{
-  "defaultProvider": "ussyrouter",
-  "defaultModel": "ussyrouter/glm-4.5-flash",
-  "theme": "ussyverse",
-  "enableSkillCommands": true,
-  "packages": [
-    "npm:@ussyverse/pi-ussycode"
-  ]
-}
-PIEOF
-    log "Wrote pi settings"
-fi
-
 chown -R ussycode:ussycode "/home/ussycode/.pi"
 
 log "Init complete"

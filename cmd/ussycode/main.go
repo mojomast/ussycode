@@ -122,11 +122,12 @@ func main() {
 
 	// Initialize proxy manager (optional -- needs Caddy running)
 	proxyMgr := proxy.NewManager(&proxy.Config{
-		AdminAPI:    cfg.CaddyAdminAddr,
-		Domain:      cfg.Domain,
-		APIDomain:   cfg.APIDomain,
-		DNSProvider: cfg.DNSProvider,
-		DNSAPIToken: cfg.DNSAPIToken,
+		AdminAPI:      cfg.CaddyAdminAddr,
+		Domain:        cfg.Domain,
+		APIDomain:     cfg.APIDomain,
+		AdminUpstream: cfg.AdminListenAddr,
+		APIUpstream:   cfg.HTTPListenAddr,
+		AuthUpstream:  cfg.AuthProxyAddr,
 	}, logger.With("component", "proxy"))
 	if cfg.CaddyAdminAddr == "" {
 		log.Println("WARNING: Caddy admin API disabled; browser routes will not be created.")
@@ -134,17 +135,15 @@ func main() {
 
 	// Try to configure Caddy base config (non-fatal if Caddy isn't running)
 	if proxyMgr.Healthy(ctx) {
-		if cfg.TLSEmail != "" {
-			if err := proxyMgr.EnsureBaseConfig(ctx, cfg.TLSEmail); err != nil {
-				log.Printf("WARNING: failed to configure Caddy: %v", err)
-			} else {
-				log.Println("Caddy base config loaded")
-			}
+		if err := proxyMgr.EnsureBaseConfig(ctx); err != nil {
+			log.Printf("WARNING: failed to configure Caddy: %v", err)
+		} else {
+			log.Println("Caddy base config loaded")
 		}
 		log.Println("Caddy proxy: connected")
 	} else {
 		log.Println("WARNING: Caddy admin API not reachable at", cfg.CaddyAdminAddr)
-		log.Println("HTTPS proxy routes will be configured but may not take effect until Caddy starts.")
+		log.Println("Internal HTTPS proxy routes will be configured but may not take effect until Caddy starts.")
 	}
 
 	// Create auth proxy (for Caddy forward_auth)

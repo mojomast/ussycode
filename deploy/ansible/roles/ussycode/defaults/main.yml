@@ -5,8 +5,14 @@ ussycode_binary_url: ""
 ussycode_build_from_source: false
 ussycode_go_version: "1.25.7"
 ussycode_repo: "https://github.com/mojomast/ussycode.git"
+ussycode_repo_version: "main"
+ussycode_local_repo_path: ""
+ussycode_local_repo_ref: "HEAD"
+ussycode_preload_default_image: false
+ussycode_local_default_image: ""
 
 ussycode_domain: ussyco.de
+ussycode_api_domain: ""
 ussycode_ssh_port: "2222"
 ussycode_http_port: "8080"
 ussycode_data_dir: /var/lib/ussycode
@@ -17,8 +23,13 @@ ussycode_zfs_pool: vmpool
 ussycode_acme_email: ""
 
 ussycode_ssh_addr: ":2222"
-ussycode_http_addr: ":8080"
-ussycode_default_image: "ussyuntu"
+ussycode_http_addr: "127.0.0.1:8080"
+ussycode_admin_addr: "127.0.0.1:9090"
+ussycode_metadata_addr: ":8083"
+ussycode_auth_proxy_addr: "127.0.0.1:9876"
+ussycode_smtp_addr: ":2525"
+ussycode_smtp_relay: "localhost:25"
+ussycode_smtp_from: "noreply@{{ ussycode_domain }}"
 ussycode_storage_backend: "zfs"
 ussycode_network_bridge: "ussy0"
 ussycode_network_subnet: "10.0.0.0/24"
@@ -28,3 +39,12 @@ ussycode_default_mem: 512
 ussycode_default_disk: 5
 ussycode_dns_provider: "cloudflare"
 ussycode_dns_api_token: ""
+ussycode_firecracker_bin: "/usr/local/bin/firecracker"
+ussycode_jailer_bin: "/usr/local/bin/jailer"
+ussycode_jailer_uid: 30000
+ussycode_jailer_gid: 30000
+ussycode_chroot_base_dir: "/srv/jailer"
+ussycode_llm_encrypt_secret: ""
+ussycode_routussy_url: ""
+ussycode_routussy_internal_key: ""
+ussycode_otlp_endpoint: ""

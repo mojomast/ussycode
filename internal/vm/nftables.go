@@ -190,24 +190,29 @@ table inet %s {
 	return nil
 }
 
-// setupIptablesCompat adds iptables rules to coexist with Docker.
+// setupIptablesCompat adds iptables rules to coexist with Docker/UFW.
 //
 // When net.bridge.bridge-nf-call-iptables=1 (Docker's default), bridged
 // frames traverse iptables in addition to nftables. Docker adds its own
 // FORWARD chain rules, and ufw's DEFAULT_FORWARD_POLICY=DROP causes
 // bridge traffic to be dropped before our nftables rules see it.
 //
-// We insert rules into DOCKER-USER (processed first in iptables FORWARD)
-// and add NAT masquerade for the VM subnet.
+// We therefore install matching iptables rules for:
+//   - VM forwarded traffic (DOCKER-USER + MASQUERADE)
+//   - VM metadata traffic to 169.254.169.254:80, which must be redirected
+//     to the host metadata service on :8083 before GCP host metadata steals it
+//   - host INPUT acceptance for ussy0 -> :8083 traffic
 func (n *NftablesManager) setupIptablesCompat(ctx context.Context, bridge, subnetCIDR string) error {
 	// Check if DOCKER-USER chain exists (Docker is installed and running)
 	if _, err := n.runner.Execute(ctx, "iptables", "-L", "DOCKER-USER", "-n"); err != nil {
 		return fmt.Errorf("DOCKER-USER chain not found: %w", err)
 	}
 
-	// Remove any existing ussy rules to avoid duplicates on restart
-	// (iptables -D fails silently if rule doesn't exist, but we ignore errors)
+	// Remove any existing ussy rules to avoid duplicates on restart.
+	// (iptables -D fails silently if a rule doesn't exist, so we ignore errors.)
 	for _, args := range [][]string{
+		{"-D", "INPUT", "-i", bridge, "-p", "tcp", "--dport", "8083", "-j", "ACCEPT"},
+		{"-t", "nat", "-D", "PREROUTING", "-i", bridge, "-d", "169.254.169.254/32", "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", "8083"},
 		{"-D", "DOCKER-USER", "-i", bridge, "-o", bridge, "-j", "DROP"},
 		{"-D", "DOCKER-USER", "-i", bridge, "!", "-o", bridge, "-j", "ACCEPT"},
 		{"-D", "DOCKER-USER", "-o", bridge, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
@@ -215,11 +220,26 @@ func (n *NftablesManager) setupIptablesCompat(ctx context.Context, bridge, subne
 		n.runner.Execute(ctx, "iptables", args...)
 	}
 
+	// Install metadata compatibility rules first.
+	// These are required because bridged VM traffic can traverse iptables/UFW
+	// before nftables, and without matching iptables rules the host never
+	// answers metadata requests on 10.0.0.1:8083 or 169.254.169.254:80.
+	metadataRules := [][]string{
+		{"-I", "INPUT", "1", "-i", bridge, "-p", "tcp", "--dport", "8083", "-j", "ACCEPT"},
+		{"-t", "nat", "-I", "PREROUTING", "1", "-i", bridge, "-d", "169.254.169.254/32", "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", "8083"},
+	}
+	for _, args := range metadataRules {
+		out, err := n.runner.Execute(ctx, "iptables", args...)
+		if err != nil {
+			return fmt.Errorf("iptables %v: %s: %w", args, string(out), err)
+		}
+	}
+
 	// Insert rules in DOCKER-USER (order matters — inserted in reverse with -I):
 	// 1. Drop inter-VM traffic (bridge → bridge)
 	// 2. Accept outbound VM traffic (bridge → !bridge)
 	// 3. Accept return traffic to VMs (→ bridge, established/related)
-	rules := [][]string{
+	forwardRules := [][]string{
 		// Inserted last (bottom of chain): drop inter-VM
 		{"-I", "DOCKER-USER", "-i", bridge, "-o", bridge, "-j", "DROP"},
 		// Inserted second: accept outbound from bridge
@@ -228,7 +248,7 @@ func (n *NftablesManager) setupIptablesCompat(ctx context.Context, bridge, subne
 		{"-I", "DOCKER-USER", "-o", bridge, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
 	}
 
-	for _, args := range rules {
+	for _, args := range forwardRules {
 		out, err := n.runner.Execute(ctx, "iptables", args...)
 		if err != nil {
 			return fmt.Errorf("iptables %v: %s: %w", args, string(out), err)
@@ -277,6 +297,8 @@ func (n *NftablesManager) CleanupNAT(ctx context.Context, bridge, subnetCIDR str
 // cleanupIptablesCompat removes iptables rules added by setupIptablesCompat.
 func (n *NftablesManager) cleanupIptablesCompat(ctx context.Context, bridge, subnetCIDR string) {
 	for _, args := range [][]string{
+		{"-D", "INPUT", "-i", bridge, "-p", "tcp", "--dport", "8083", "-j", "ACCEPT"},
+		{"-t", "nat", "-D", "PREROUTING", "-i", bridge, "-d", "169.254.169.254/32", "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", "8083"},
 		{"-D", "DOCKER-USER", "-i", bridge, "-o", bridge, "-j", "DROP"},
 		{"-D", "DOCKER-USER", "-i", bridge, "!", "-o", bridge, "-j", "ACCEPT"},
 		{"-D", "DOCKER-USER", "-o", bridge, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},

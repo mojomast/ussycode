@@ -1,50 +1,102 @@
 ---
-- name: Install nginx for the public edge
+- name: Install nginx and certbot packages for the public edge
   ansible.builtin.apt:
-    name: nginx
+    name:
+      - nginx
+      - certbot
+      - python3-certbot-dns-cloudflare
     state: present
   tags: [edge, packages]
 
-- name: Ensure Caddy can listen on internal port
-  ansible.builtin.lineinfile:
-    path: /etc/default/caddy
-    regexp: '^#?CADDY_LISTEN='
-    line: 'CADDY_LISTEN={{ caddy_site_listen }}'
-    create: yes
-  notify: restart caddy
+- name: Ensure Let's Encrypt working directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/letsencrypt
+    - /etc/letsencrypt/renewal-hooks
+    - /etc/letsencrypt/renewal-hooks/deploy
+    - /etc/nginx/sites-available
+    - /etc/nginx/sites-enabled
   tags: [edge, config]
 
-- name: Deploy edge nginx TLS site
+- name: Install Cloudflare credentials for certbot
   ansible.builtin.copy:
-    dest: /etc/nginx/sites-enabled/ussy-edge.conf
+    dest: "{{ edge_cloudflare_credentials_path }}"
+    owner: root
+    group: root
+    mode: "0600"
     content: |
-      server {
-          listen 443 ssl;
-          listen [::]:443 ssl;
-          server_name {{ ussycode_domain }} *.{{ ussycode_domain }};
+      dns_cloudflare_api_token = {{ edge_cloudflare_api_token }}
+  when: edge_cloudflare_api_token | length > 0
+  tags: [edge, config, tls]
 
-          ssl_certificate /etc/letsencrypt/live/ussy.host/fullchain.pem;
-          ssl_certificate_key /etc/letsencrypt/live/ussy.host/privkey.pem;
-          include /etc/letsencrypt/options-ssl-nginx.conf;
-          ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+- name: Fail if Cloudflare API token is missing for nginx wildcard TLS
+  ansible.builtin.fail:
+    msg: >
+      ussycode_dns_api_token must be set for the edge role so certbot can issue
+      the wildcard certificate for {{ ussycode_domain }} via Cloudflare DNS.
+  when: edge_cloudflare_api_token | length == 0
+  tags: [edge, config, tls]
 
-          location / {
-              proxy_pass http://{{ caddy_backend }};
-              proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-              proxy_http_version 1.1;
-              proxy_buffering off;
-          }
-      }
+- name: Fail if certbot email is missing for nginx wildcard TLS
+  ansible.builtin.fail:
+    msg: >
+      ussycode_acme_email must be set for the edge role so certbot can issue
+      and renew the nginx certificate for {{ ussycode_domain }}.
+  when: edge_certbot_email | length == 0
+  tags: [edge, config, tls]
+
+- name: Deploy certbot nginx reload hook
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      systemctl reload nginx
+  tags: [edge, tls]
+
+- name: Check whether edge certificate already exists
+  ansible.builtin.stat:
+    path: "{{ edge_certificate_fullchain_path }}"
+  register: edge_certificate_stat
+  tags: [edge, tls]
+
+- name: Obtain SAN wildcard certificate with certbot
+  ansible.builtin.command: >
+    certbot certonly
+    --non-interactive
+    --agree-tos
+    --dns-cloudflare
+    --dns-cloudflare-credentials {{ edge_cloudflare_credentials_path }}
+    --dns-cloudflare-propagation-seconds {{ edge_certbot_dns_propagation_seconds }}
+    --email {{ edge_certbot_email }}
+    --cert-name {{ edge_cert_name }}
+    {% if edge_force_cert_renewal | bool %}--expand --force-renewal {% endif %}
+    {% for domain in edge_server_names %}-d {{ domain }} {% endfor %}
+  when: (not edge_certificate_stat.stat.exists) or (edge_force_cert_renewal | bool)
+  tags: [edge, tls]
+
+- name: Deploy nginx edge site
+  ansible.builtin.template:
+    src: ussy-edge.conf.j2
+    dest: /etc/nginx/sites-available/ussy-edge.conf
+    owner: root
+    group: root
+    mode: "0644"
   notify: reload nginx
   tags: [edge, config]
 
 - name: Enable edge nginx site
   ansible.builtin.file:
-    src: /etc/nginx/sites-available/ussy-edge
-    dest: /etc/nginx/sites-enabled/ussy-edge
+    src: /etc/nginx/sites-available/ussy-edge.conf
+    dest: /etc/nginx/sites-enabled/ussy-edge.conf
     state: link
   notify: reload nginx
   tags: [edge, config]
@@ -54,6 +106,11 @@
     path: /etc/nginx/sites-enabled/default
     state: absent
   notify: reload nginx
+  tags: [edge, config]
+
+- name: Validate nginx configuration
+  ansible.builtin.command: /usr/sbin/nginx -t
+  changed_when: false
   tags: [edge, config]
 
 - name: Start nginx edge

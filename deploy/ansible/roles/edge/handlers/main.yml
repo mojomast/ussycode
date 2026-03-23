@@ -4,6 +4,11 @@
     name: nginx
     state: reloaded
 
+- name: restart nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: restarted
+
 - name: daemon reload
   ansible.builtin.systemd:
     daemon_reload: yes

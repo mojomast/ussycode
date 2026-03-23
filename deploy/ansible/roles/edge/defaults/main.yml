@@ -1,5 +1,18 @@
 ---
-caddy_public_host: "0.0.0.0"
-caddy_public_http_port: 80
-caddy_public_https_port: 443
-caddy_backend: "127.0.0.1:8085"
+edge_backend: "{{ caddy_site_listen }}"
+edge_cert_name: "{{ ussycode_domain | replace('.', '-') }}"
+edge_force_cert_renewal: false
+edge_certbot_email: "{{ ussycode_acme_email | default('') }}"
+edge_cloudflare_api_token: "{{ ussycode_dns_api_token | default('') }}"
+edge_routussy_domain: ""
+edge_routussy_backend: "127.0.0.1:3000"
+edge_tls_domains:
+  - "{{ ussycode_domain }}"
+  - "*.{{ ussycode_domain }}"
+  - "{{ ussycode_api_domain | default('') }}"
+  - "{{ edge_routussy_domain | default('') }}"
+edge_server_names: "{{ edge_tls_domains | reject('equalto', '') | list }}"
+edge_cloudflare_credentials_path: /etc/letsencrypt/cloudflare.ini
+edge_certificate_fullchain_path: "/etc/letsencrypt/live/{{ edge_cert_name }}/fullchain.pem"
+edge_certificate_privkey_path: "/etc/letsencrypt/live/{{ edge_cert_name }}/privkey.pem"
+edge_certbot_dns_propagation_seconds: 30

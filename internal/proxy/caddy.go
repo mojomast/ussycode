@@ -1,8 +1,9 @@
-// Package proxy implements a reverse proxy manager that integrates with
-// Caddy to provide automatic TLS and per-VM subdomain routing.
+// Package proxy implements a reverse proxy manager backed by Caddy's admin API.
 //
-// It uses the Caddy admin API (http://localhost:2019) to dynamically
-// add/remove reverse proxy routes as VMs start and stop.
+// In the aligned self-hosting topology, nginx owns public :80/:443 and forwards
+// traffic to an internal-only Caddy listener. ussycode uses the Caddy admin API
+// (http://localhost:2019) to dynamically add/remove API, admin, VM, and
+// custom-domain reverse proxy routes as VMs start and stop.
 package proxy
 
 import (
@@ -19,24 +20,26 @@ import (
 
 // Manager manages Caddy reverse proxy routes for VMs.
 type Manager struct {
-	adminAPI    string // Caddy admin API URL (default: http://localhost:2019)
-	domain      string // base domain (e.g., "ussy.host")
-	apiDomain   string // public API hostname (e.g. api.ussy.host)
-	dnsProvider string // ACME DNS provider module name
-	dnsAPIToken string // ACME DNS provider API token
-	client      *http.Client
-	logger      *slog.Logger
-	mu          sync.Mutex
-	routes      map[string]string // vmName -> vmIP
+	adminAPI      string // Caddy admin API URL (default: http://localhost:2019)
+	domain        string // base domain (e.g., "ussy.host")
+	apiDomain     string // public API hostname (e.g. api.ussy.host)
+	adminUpstream string // internal admin upstream
+	apiUpstream   string // internal API upstream
+	authUpstream  string // internal auth proxy upstream
+	client        *http.Client
+	logger        *slog.Logger
+	mu            sync.Mutex
+	routes        map[string]string // vmName -> vmIP
 }
 
 // Config holds configuration for the proxy manager.
 type Config struct {
-	AdminAPI    string // Caddy admin API URL
-	Domain      string // base domain for VM subdomains
-	APIDomain   string // public hostname for the API
-	DNSProvider string // DNS provider name for ACME DNS challenge
-	DNSAPIToken string // DNS provider API token for ACME DNS challenge
+	AdminAPI      string // Caddy admin API URL
+	Domain        string // base domain for VM subdomains
+	APIDomain     string // public hostname for the API
+	AdminUpstream string // internal admin upstream, e.g. 127.0.0.1:9090
+	APIUpstream   string // internal API upstream, e.g. 127.0.0.1:8080
+	AuthUpstream  string // internal auth proxy upstream, e.g. 127.0.0.1:9876
 }
 
 // NewManager creates a new Caddy proxy manager.
@@ -46,12 +49,26 @@ func NewManager(cfg *Config, logger *slog.Logger) *Manager {
 		adminAPI = "http://localhost:2019"
 	}
 
+	adminUpstream := cfg.AdminUpstream
+	if adminUpstream == "" {
+		adminUpstream = "127.0.0.1:9090"
+	}
+	apiUpstream := cfg.APIUpstream
+	if apiUpstream == "" {
+		apiUpstream = "127.0.0.1:8080"
+	}
+	authUpstream := cfg.AuthUpstream
+	if authUpstream == "" {
+		authUpstream = "127.0.0.1:9876"
+	}
+
 	return &Manager{
-		adminAPI:    adminAPI,
-		domain:      cfg.Domain,
-		apiDomain:   cfg.APIDomain,
-		dnsProvider: cfg.DNSProvider,
-		dnsAPIToken: cfg.DNSAPIToken,
+		adminAPI:      adminAPI,
+		domain:        cfg.Domain,
+		apiDomain:     cfg.APIDomain,
+		adminUpstream: adminUpstream,
+		apiUpstream:   apiUpstream,
+		authUpstream:  authUpstream,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -179,84 +196,59 @@ func (m *Manager) UpdateRoute(ctx context.Context, vmName, vmIP string, port int
 	return m.AddRoute(ctx, vmName, vmIP, port)
 }
 
-// EnsureBaseConfig pushes a base Caddy configuration that sets up the
-// wildcard TLS certificate and default server. Call this once at startup.
-func (m *Manager) EnsureBaseConfig(ctx context.Context, email string) error {
-	m.logger.Info("configuring Caddy base config", "domain", m.domain, "api_domain", m.apiDomain, "email", email)
+// EnsureBaseConfig pushes a base Caddy configuration for the internal-only
+// nginx-edge topology. Call this once at startup to ensure Caddy serves the
+// control-plane hosts and leaves public TLS/listeners to nginx.
+func (m *Manager) EnsureBaseConfig(ctx context.Context) error {
+	m.logger.Info("configuring Caddy base config", "domain", m.domain, "api_domain", m.apiDomain)
 
-	wildcardDomain := fmt.Sprintf("*.%s", m.domain)
-	providerName := m.dnsProvider
-	if providerName == "" {
-		providerName = "cloudflare"
+	routes := []caddyRoute{
+		{
+			ID:    "ussycode-healthz",
+			Match: []caddyMatch{{Path: []string{"/healthz"}}},
+			Handle: []caddyHandler{{
+				Handler:    "static_response",
+				StatusCode: http.StatusOK,
+			}},
+		},
 	}
-
-	routes := []caddyRoute{}
 
 	if m.apiDomain != "" {
 		routes = append(routes, caddyRoute{
+			ID:    "ussycode-api",
 			Match: []caddyMatch{{Host: []string{m.apiDomain}}},
 			Handle: []caddyHandler{{
-				Handler: "subroute",
-				Routes: []caddySubroute{{
-					Handle: []caddyHandler{{
-						Handler: "reverse_proxy",
-						Upstreams: []caddyUpstream{{Dial: "127.0.0.1:8080"}},
-					}},
-				}},
+				Handler:   "reverse_proxy",
+				Upstreams: []caddyUpstream{{Dial: m.apiUpstream}},
 			}},
 		})
 	}
 
 	routes = append(routes,
 		caddyRoute{
+			ID:    "ussycode-admin",
 			Match: []caddyMatch{{Host: []string{m.domain}}},
 			Handle: []caddyHandler{{
-				Handler: "subroute",
-				Routes: []caddySubroute{{
-					Handle: []caddyHandler{{
-						Handler: "reverse_proxy",
-						Upstreams: []caddyUpstream{{Dial: "127.0.0.1:9090"}},
-					}},
-				}},
+				Handler:   "reverse_proxy",
+				Upstreams: []caddyUpstream{{Dial: m.adminUpstream}},
 			}},
 		},
 	)
 
-	subjects := append([]string{m.domain, wildcardDomain}, nonEmpty(m.apiDomain)...)
-
 	cfg := caddyConfig{
+		Admin: caddyAdmin{Listen: "localhost:2019"},
 		Apps: caddyApps{
 			HTTP: caddyHTTP{
+				HTTPPort:  8085,
+				HTTPSPort: 8443,
 				Servers: map[string]caddyServer{
 					"srv0": {
-						Listen: []string{":443", ":80"},
-						Routes: routes,
-					},
-				},
-			},
-			TLS: &caddyTLS{
-				Certificates: &caddyCertificates{
-					Automate: subjects,
-				},
-				Automation: caddyTLSAutomation{
-					Policies: []caddyTLSPolicy{
-						{
-							Subjects: subjects,
-							Issuers: []caddyTLSIssuer{
-								{
-									Module: "acme",
-									Email:  email,
-									Challenges: &caddyACMEChallenges{
-										DNS: &caddyDNSChallenge{
-											Provider: caddyDNSProvider{
-												Name:     providerName,
-												APIToken: m.dnsAPIToken,
-											},
-										},
-									},
-								},
-							},
+						Listen: []string{"127.0.0.1:8085"},
+						AutomaticHTTPS: &caddyAutomaticHTTPS{
+							Disable:          true,
+							DisableRedirects: true,
 						},
+						Routes: routes,
 					},
 				},
 			},
@@ -439,21 +431,33 @@ func customDomainRouteID(domain string) string {
 // --- Caddy JSON API types ---
 
 type caddyConfig struct {
-	Apps caddyApps `json:"apps"`
+	Admin caddyAdmin `json:"admin,omitempty"`
+	Apps  caddyApps  `json:"apps"`
+}
+
+type caddyAdmin struct {
+	Listen string `json:"listen,omitempty"`
 }
 
 type caddyApps struct {
 	HTTP caddyHTTP `json:"http"`
-	TLS  *caddyTLS `json:"tls,omitempty"`
 }
 
 type caddyHTTP struct {
-	Servers map[string]caddyServer `json:"servers"`
+	HTTPPort  int                    `json:"http_port,omitempty"`
+	HTTPSPort int                    `json:"https_port,omitempty"`
+	Servers   map[string]caddyServer `json:"servers"`
 }
 
 type caddyServer struct {
-	Listen []string     `json:"listen"`
-	Routes []caddyRoute `json:"routes"`
+	Listen         []string             `json:"listen"`
+	AutomaticHTTPS *caddyAutomaticHTTPS `json:"automatic_https,omitempty"`
+	Routes         []caddyRoute         `json:"routes"`
+}
+
+type caddyAutomaticHTTPS struct {
+	Disable          bool `json:"disable,omitempty"`
+	DisableRedirects bool `json:"disable_redirects,omitempty"`
 }
 
 type caddyRoute struct {
@@ -488,51 +492,4 @@ type caddyUpstream struct {
 
 type caddyHeaderOps struct {
 	Set map[string][]string `json:"set,omitempty"`
-}
-
-type caddyTLS struct {
-	Certificates *caddyCertificates  `json:"certificates,omitempty"`
-	Automation   caddyTLSAutomation   `json:"automation"`
-}
-
-type caddyCertificates struct {
-	Automate []string `json:"automate,omitempty"`
-}
-
-type caddyTLSAutomation struct {
-	Policies []caddyTLSPolicy `json:"policies"`
-}
-
-type caddyTLSPolicy struct {
-	Subjects []string         `json:"subjects"`
-	Issuers  []caddyTLSIssuer `json:"issuers"`
-}
-
-type caddyTLSIssuer struct {
-	Module     string               `json:"module"`
-	Email      string               `json:"email,omitempty"`
-	Challenges *caddyACMEChallenges `json:"challenges,omitempty"`
-}
-
-type caddyACMEChallenges struct {
-	DNS *caddyDNSChallenge `json:"dns,omitempty"`
-}
-
-type caddyDNSChallenge struct {
-	Provider caddyDNSProvider `json:"provider"`
-}
-
-type caddyDNSProvider struct {
-	Name     string `json:"name"`
-	APIToken string `json:"api_token,omitempty"`
-}
-
-func nonEmpty(values ...string) []string {
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		if v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
 }

@@ -75,12 +75,91 @@
 - name: Clone and build ussycode from source
   when: ussycode_build_from_source
   block:
+    - name: Ensure remote source directory exists
+      ansible.builtin.file:
+        path: /opt/ussycode-src
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create local ussycode source archive
+      when: ussycode_local_repo_path | default('') | length > 0
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --exclude=.git
+          - --exclude=node_modules
+          - --exclude=.direnv
+          - --exclude=.jj
+          - -czf
+          - /tmp/ussycode-src.tar.gz
+          - -C
+          - "{{ ussycode_local_repo_path }}"
+          - .
+      delegate_to: localhost
+      changed_when: true
+
+    - name: Reset remote source directory for local source deploy
+      when: ussycode_local_repo_path | default('') | length > 0
+      ansible.builtin.file:
+        path: /opt/ussycode-src
+        state: absent
+
+    - name: Recreate remote source directory for local source deploy
+      when: ussycode_local_repo_path | default('') | length > 0
+      ansible.builtin.file:
+        path: /opt/ussycode-src
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy local ussycode source archive to remote host
+      when: ussycode_local_repo_path | default('') | length > 0
+      ansible.builtin.copy:
+        src: /tmp/ussycode-src.tar.gz
+        dest: /tmp/ussycode-src.tar.gz
+        mode: "0644"
+
+    - name: Extract local ussycode source archive on remote host
+      when: ussycode_local_repo_path | default('') | length > 0
+      ansible.builtin.unarchive:
+        src: /tmp/ussycode-src.tar.gz
+        dest: /opt/ussycode-src
+        remote_src: yes
+
     - name: Clone ussycode repository
+      when: ussycode_local_repo_path | default('') | length == 0
       ansible.builtin.git:
         repo: "{{ ussycode_repo }}"
         dest: /opt/ussycode-src
-        version: main
+        version: "{{ ussycode_repo_version }}"
         force: yes
+
+    - name: Capture deployed source revision from local tree
+      when: ussycode_local_repo_path | default('') | length > 0
+      ansible.builtin.copy:
+        dest: /opt/ussycode-src/.deployed-source.txt
+        content: |
+          local_repo_path={{ ussycode_local_repo_path }}
+          local_repo_ref={{ ussycode_local_repo_ref | default('HEAD') }}
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Remove temporary local ussycode source archive
+      when: ussycode_local_repo_path | default('') | length > 0
+      ansible.builtin.file:
+        path: /tmp/ussycode-src.tar.gz
+        state: absent
+      delegate_to: localhost
+
+    - name: Remove temporary remote ussycode source archive
+      when: ussycode_local_repo_path | default('') | length > 0
+      ansible.builtin.file:
+        path: /tmp/ussycode-src.tar.gz
+        state: absent
 
     - name: Build ussycode binary
       ansible.builtin.command: /usr/local/go/bin/go build -o /usr/local/bin/ussycode ./cmd/ussycode/
@@ -89,6 +168,7 @@
       environment:
         GOPATH: /root/go
         PATH: "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      notify: restart ussycode
   tags: [ussycode, build]
 
 # --- Download binary path ---
@@ -119,6 +199,79 @@
       You can also manually copy the binary to the server.
   when: not ussycode_binary.stat.exists
   tags: [ussycode, install]
+
+# --- Default image preload ---
+
+- name: Ensure local image export cache directory exists
+  when:
+    - ussycode_preload_default_image | bool
+    - ussycode_local_default_image | default('') | length > 0
+  ansible.builtin.file:
+    path: "{{ lookup('env', 'HOME') }}/.cache/ussycode"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  tags: [ussycode, images]
+
+- name: Export local default VM image tarball
+  when:
+    - ussycode_preload_default_image | bool
+    - ussycode_local_default_image | default('') | length > 0
+  ansible.builtin.command:
+    argv:
+      - docker
+      - save
+      - -o
+      - "{{ lookup('env', 'HOME') }}/.cache/ussycode/default-image.tar"
+      - "{{ ussycode_local_default_image }}"
+  delegate_to: localhost
+  become: false
+  changed_when: true
+  tags: [ussycode, images]
+
+- name: Copy default VM image tarball to remote host
+  when:
+    - ussycode_preload_default_image | bool
+    - ussycode_local_default_image | default('') | length > 0
+  ansible.builtin.copy:
+    src: "{{ lookup('env', 'HOME') }}/.cache/ussycode/default-image.tar"
+    dest: /tmp/ussycode-default-image.tar
+    mode: "0644"
+  tags: [ussycode, images]
+
+- name: Load default VM image into remote Docker cache
+  when:
+    - ussycode_preload_default_image | bool
+    - ussycode_local_default_image | default('') | length > 0
+  ansible.builtin.command:
+    argv:
+      - docker
+      - load
+      - -i
+      - /tmp/ussycode-default-image.tar
+  changed_when: true
+  tags: [ussycode, images]
+
+- name: Remove temporary local default VM image tarball
+  when:
+    - ussycode_preload_default_image | bool
+    - ussycode_local_default_image | default('') | length > 0
+  ansible.builtin.file:
+    path: "{{ lookup('env', 'HOME') }}/.cache/ussycode/default-image.tar"
+    state: absent
+  delegate_to: localhost
+  become: false
+  tags: [ussycode, images]
+
+- name: Remove temporary remote default VM image tarball
+  when:
+    - ussycode_preload_default_image | bool
+    - ussycode_local_default_image | default('') | length > 0
+  ansible.builtin.file:
+    path: /tmp/ussycode-default-image.tar
+    state: absent
+  tags: [ussycode, images]
 
 # --- Configuration ---
 

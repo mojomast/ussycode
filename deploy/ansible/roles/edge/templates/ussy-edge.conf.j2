@@ -1,0 +1,44 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ edge_server_names | join(' ') }};
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {{ edge_server_names | join(' ') }};
+
+    ssl_certificate {{ edge_certificate_fullchain_path }};
+    ssl_certificate_key {{ edge_certificate_privkey_path }};
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_tickets off;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+{% if edge_routussy_domain | default('') %}
+    set $ussy_edge_upstream {{ edge_backend }};
+    if ($host = {{ edge_routussy_domain }}) {
+        set $ussy_edge_upstream {{ edge_routussy_backend }};
+    }
+{% endif %}
+
+    location / {
+{% if edge_routussy_domain | default('') %}
+        proxy_pass http://$ussy_edge_upstream;
+{% else %}
+        proxy_pass http://{{ edge_backend }};
+{% endif %}
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }
+}

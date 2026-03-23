@@ -179,18 +179,19 @@ func (im *ImageManager) loadLocalDockerImage(ctx context.Context, ref name.Refer
 	cacheName := strings.NewReplacer("/", "_", ":", "_", "@", "_").Replace(image) + ".tar"
 	tmpPath := filepath.Join(localDir, cacheName)
 
-	if _, err := os.Stat(tmpPath); os.IsNotExist(err) {
-		tmpFile, err := os.Create(tmpPath)
-		if err != nil {
-			return nil, err
-		}
-		tmpFile.Close()
+	// Always refresh the exported tarball from the current local Docker image.
+	// Otherwise rebuilt short-name images like "ussyuntu:latest" keep resolving
+	// to stale cached tarballs and the rootfs digest never changes.
+	tmpFile, err := os.Create(tmpPath)
+	if err != nil {
+		return nil, err
+	}
+	tmpFile.Close()
 
-		cmd := exec.CommandContext(ctx, "docker", "save", "-o", tmpPath, image)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			os.Remove(tmpPath)
-			return nil, fmt.Errorf("docker save %q: %s: %w", image, string(out), err)
-		}
+	cmd := exec.CommandContext(ctx, "docker", "save", "-o", tmpPath, image)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("docker save %q: %s: %w", image, string(out), err)
 	}
 
 	tag, err := name.NewTag(image, name.WeakValidation)

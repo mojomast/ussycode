@@ -30,8 +30,8 @@
 - name: Add hostname to /etc/hosts
   ansible.builtin.lineinfile:
     path: /etc/hosts
-    regexp: "^127\\.0\\.1\\.1"
-    line: "127.0.1.1 {{ ussycode_hostname }}"
+    regexp: "^127\\.0\\.1\\.1\\s+"
+    line: "127.0.1.1 {{ ussycode_hostname }} {{ ussycode_hostname.split('.')[0] }}"
     state: present
   tags: [common, hostname]
 
@@ -85,6 +85,12 @@
     comment: "ussycode platform service account"
   tags: [common, user]
 
+- name: Check whether optional bridge sysctl exists
+  ansible.builtin.stat:
+    path: /proc/sys/net/bridge/bridge-nf-call-iptables
+  register: bridge_nf_call_iptables
+  tags: [common, sysctl]
+
 - name: Configure sysctl for VM networking
   ansible.posix.sysctl:
     name: "{{ item.key }}"
@@ -92,12 +98,17 @@
     sysctl_set: yes
     state: present
     reload: yes
-  loop:
-    - { key: "net.ipv4.ip_forward", value: "1" }
-    - { key: "net.ipv4.conf.all.forwarding", value: "1" }
-    - { key: "net.bridge.bridge-nf-call-iptables", value: "0" }
-    - { key: "fs.inotify.max_user_instances", value: "1024" }
-    - { key: "fs.inotify.max_user_watches", value: "1048576" }
+  loop: >-
+    {{
+      [
+        {'key': 'net.ipv4.ip_forward', 'value': '1'},
+        {'key': 'net.ipv4.conf.all.forwarding', 'value': '1'},
+        {'key': 'fs.inotify.max_user_instances', 'value': '1024'},
+        {'key': 'fs.inotify.max_user_watches', 'value': '1048576'}
+      ]
+      +
+      ([{'key': 'net.bridge.bridge-nf-call-iptables', 'value': '0'}] if bridge_nf_call_iptables.stat.exists else [])
+    }}
   tags: [common, sysctl]
 
 - name: Set open file limits
@@ -111,3 +122,11 @@
       root    hard    nofile    65535
     mode: "0644"
   tags: [common, limits]
+
+- name: Enable and start Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  tags: [common, packages]

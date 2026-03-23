@@ -4,11 +4,19 @@
 # Creates a ZFS pool with dataset hierarchy for ussycode VMs, images,
 # and user data. The pool device and name are configurable.
 
-- name: Install ZFS packages
+- name: Remove zfs-dkms when kernel-shipped ZFS modules are expected
+  ansible.builtin.apt:
+    name: zfs-dkms
+    state: absent
+    purge: yes
+    autoremove: yes
+  tags: [zfs, packages]
+
+- name: Install ZFS userspace packages
   ansible.builtin.apt:
     name:
       - zfsutils-linux
-      - zfs-dkms
+      - zfs-zed
     state: present
   tags: [zfs, packages]
 

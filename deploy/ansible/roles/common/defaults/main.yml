@@ -3,6 +3,7 @@
 ussycode_system_user: ussycode
 ussycode_system_group: ussycode
 ussycode_hostname: "{{ inventory_hostname }}"
+ussycode_ssh_port: 2222
 
 common_packages:
   - curl
@@ -20,10 +21,11 @@ common_packages:
   - tmux
   - rsync
   - net-tools
+  - docker.io
 
 ufw_allowed_ports:
   - { port: 22, proto: tcp, comment: "SSH" }
   - { port: 80, proto: tcp, comment: "HTTP" }
   - { port: 443, proto: tcp, comment: "HTTPS" }
-  - { port: 2222, proto: tcp, comment: "ussycode SSH gateway" }
+  - { port: "{{ ussycode_ssh_port }}", proto: tcp, comment: "ussycode SSH gateway" }
   - { port: 51820, proto: udp, comment: "WireGuard mesh" }

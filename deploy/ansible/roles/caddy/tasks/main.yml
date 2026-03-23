@@ -1,8 +1,5 @@
 ---
-# roles/caddy/tasks/main.yml — Install and configure Caddy reverse proxy
-#
-# Installs Caddy from the official apt repository, configures wildcard TLS
-# with DNS challenge, and sets up the admin API for ussycode route management.
+# roles/caddy/tasks/main.yml — Install and configure internal-only Caddy reverse proxy
 
 - name: Install dependencies for Caddy repo
   ansible.builtin.apt:
@@ -41,16 +38,21 @@
     state: present
   tags: [caddy, packages]
 
-- name: Create Caddy config directory
+- name: Ensure Caddy config directories exist
   ansible.builtin.file:
-    path: /etc/caddy
+    path: "{{ item.path }}"
     state: directory
-    owner: root
-    group: root
-    mode: "0755"
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/caddy, mode: '0755' }
+    - { path: /etc/systemd/system/caddy.service.d, mode: '0755' }
+    - { path: /var/lib/caddy/.local/share/caddy, owner: '{{ caddy_service_user }}', group: '{{ caddy_service_group }}', mode: '0700' }
+    - { path: /var/lib/caddy/.config/caddy, owner: '{{ caddy_service_user }}', group: '{{ caddy_service_group }}', mode: '0700' }
   tags: [caddy, config]
 
-- name: Deploy Caddyfile
+- name: Deploy internal-only Caddyfile
   ansible.builtin.template:
     src: Caddyfile.j2
     dest: /etc/caddy/Caddyfile
@@ -61,45 +63,15 @@
   notify: reload caddy
   tags: [caddy, config]
 
-- name: Configure Caddy to use internal site port
-  ansible.builtin.lineinfile:
-    path: /etc/default/caddy
-    regexp: '^#?CADDY_LISTEN='
-    line: 'CADDY_LISTEN={{ caddy_site_listen }}'
-    create: yes
-  notify: restart caddy
-  tags: [caddy, config]
-
-- name: Create Caddy data directory
-  ansible.builtin.file:
-    path: /var/lib/caddy/.local/share/caddy
-    state: directory
-    owner: caddy
-    group: caddy
-    mode: "0700"
-  tags: [caddy, config]
-
-- name: Create Caddy config storage directory
-  ansible.builtin.file:
-    path: /var/lib/caddy/.config/caddy
-    state: directory
-    owner: caddy
-    group: caddy
-    mode: "0700"
-  tags: [caddy, config]
-
-- name: Deploy Caddy systemd override for admin API
+- name: Deploy Caddy systemd override for internal listeners
   ansible.builtin.copy:
     dest: /etc/systemd/system/caddy.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
     content: |
       [Service]
-      # Ensure admin API is accessible to ussycode
       Environment=CADDY_ADMIN={{ caddy_admin_listen }}
-      # Pass DNS API token for wildcard cert challenges
-      {% if caddy_dns_api_token %}
-      Environment=CLOUDFLARE_API_TOKEN={{ caddy_dns_api_token }}
-      {% endif %}
-    mode: "0644"
   notify:
     - daemon reload
     - restart caddy
@@ -113,7 +85,7 @@
     daemon_reload: yes
   tags: [caddy, service]
 
-- name: Verify Caddy is running
+- name: Verify Caddy admin API is running
   ansible.builtin.uri:
     url: "http://{{ caddy_admin_listen }}/config/"
     method: GET

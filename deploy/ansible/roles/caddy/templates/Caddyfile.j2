@@ -1,16 +1,17 @@
 # Caddyfile — managed by Ansible for ussycode
 #
-# ussycode dynamically adds per-VM routes via the Caddy admin API.
-# This base config handles:
-#   - Wildcard TLS via DNS challenge
-#   - Admin API access on localhost
-#   - Default catch-all that shows a landing page
+# This role keeps Caddy internal-only. nginx owns public :80/:443 and forwards
+# traffic to {{ caddy_site_listen }}. ussycode mutates runtime config through the
+# admin API on {{ caddy_admin_listen }} to add API, admin, VM, and custom-domain
+# routes.
 {
 	admin {{ caddy_admin_listen }}
+	auto_https off
 	http_port 8085
+	https_port 8443
 }
 
-# Internal app server for the edge proxy
 http://{{ caddy_site_listen }} {
-	respond "ussycode - SSH dev environments. Connect: ssh {{ ussycode_domain }}" 200
+	respond /healthz 200
+	respond "ussycode internal caddy" 200
 }

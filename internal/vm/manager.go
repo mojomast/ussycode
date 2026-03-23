@@ -323,6 +323,9 @@ func (m *Manager) installPiRuntimeFiles(ctx context.Context, rootfs string) erro
 	if err := mkdirExt4(ctx, rootfs, "/"+filepath.Join(base, "themes")); err != nil {
 		return err
 	}
+	if err := mkdirExt4(ctx, rootfs, "/"+filepath.Join(base, "prompts")); err != nil {
+		return err
+	}
 	if err := mkdirExt4(ctx, rootfs, "/"+filepath.Join(base, "skills")); err != nil {
 		return err
 	}
@@ -337,6 +340,9 @@ func (m *Manager) installPiRuntimeFiles(ctx context.Context, rootfs string) erro
 		return err
 	}
 	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "themes", "ussyverse.json"), ussycodePiTheme, 1001, 1001, "0100644"); err != nil {
+		return err
+	}
+	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "prompts", "publish.md"), ussycodePiPromptPublish, 1001, 1001, "0100644"); err != nil {
 		return err
 	}
 	if err := writeExt4File(ctx, rootfs, "/"+filepath.Join(base, "skills", "ussycode-web", "SKILL.md"), ussycodePiSkillWeb, 1001, 1001, "0100644"); err != nil {

@@ -24,3 +24,6 @@ var ussycodePiSkillWeb string
 
 //go:embed pi/skills/ussycode-publish/SKILL.md
 var ussycodePiSkillPublish string
+
+//go:embed pi/prompts/publish.md
+var ussycodePiPromptPublish string

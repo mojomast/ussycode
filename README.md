@@ -158,7 +158,7 @@ The `ussyuntu` VM image includes **pi** (default) and **OpenCode** (optional) as
 
 pi launches automatically when users SSH into a VM. It's configured with:
 
-- `@ussyverse/pi-ussycode` package for ussycode-specific tools, skills, and theme
+- vendored ussycode pi runtime assets from `internal/vm/pi/` for the extension, skills, prompts, and theme
 - `ussyrouter` provider for LLM access with budget enforcement
 - Fingerprint-based authentication (no raw API keys exposed)
 - First-run onboarding for new users
